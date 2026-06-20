@@ -107,7 +107,10 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     if msg_id:
         await call_api(ws, "delete_msg", {"message_id": msg_id})
     
-    is_nsfw = check_nsfw(img_bytes)
+    if is_group:
+        is_nsfw = check_nsfw(img_bytes)
+    else:
+        is_nsfw = False
 
     if not is_group or not is_nsfw:
         if msg_id:
