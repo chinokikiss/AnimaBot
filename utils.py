@@ -2,7 +2,6 @@ import json
 import os
 import httpx
 from pathlib import Path
-import shutil
 
 CONFIG_PATH = "config.json"
 API_URL = "https://uapis.cn/api/v1/image/nsfw"
@@ -47,18 +46,11 @@ def check_nsfw(data) -> dict:
         log("审核API出错！")
         return True
 
-def clear_folder(folder_path):
-    path = Path(folder_path)
-
-    if not path.exists():
-        print(f"文件夹 {folder_path} 不存在")
-        return
-
-    for item in path.iterdir():
-        try:
-            if item.is_file() or item.is_symlink():
-                item.unlink()
-            elif item.is_dir():
-                shutil.rmtree(item)
-        except:
-            pass
+def delete_images(folder_path):
+    img_exts = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+    for file in Path(folder_path).rglob("*"):
+        if file.suffix.lower() in img_exts:
+            try:
+                file.unlink()
+            except OSError:
+                pass

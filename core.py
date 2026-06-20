@@ -8,7 +8,7 @@ import httpx
 from LLM_Formatter.LLM_Extractor import extract_prompt_params
 from LLM_Formatter.LLM_Node import LLM_Prompt_Formatter, load_api_config
 from comfyui_api import load_workflow, run_workflow
-from utils import check_nsfw, log, clear_folder
+from utils import check_nsfw, log, delete_images
 from websockets.asyncio.client import connect
 
 WS_URL = "ws://localhost:3001"
@@ -47,7 +47,7 @@ async def extract_image_from_msg(msg_array, ws):
     return None
 
 async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self_id=None):
-    clear_folder("/tmp/napcat-plugin-uploads")
+    delete_images("/tmp/napcat-plugin-uploads")
 
     action = "send_group_msg" if is_group else "send_private_msg"
     param1 = "group_id" if is_group else "user_id"
@@ -190,11 +190,11 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                 "messages": params_nodes
             })
         
-    clear_folder("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/cache")
-    clear_folder("/root/.config/QQ/NapCat/temp")
+    delete_images("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/cache")
+    delete_images("/root/.config/QQ")
 
 async def upscale(ws, id1, id2, is_group, user_msg_id, image):
-    clear_folder("/tmp/napcat-plugin-uploads")
+    delete_images("/tmp/napcat-plugin-uploads")
     
     action = "send_group_msg" if is_group else "send_private_msg"
     param1 = "group_id" if is_group else "user_id"
@@ -236,8 +236,8 @@ async def upscale(ws, id1, id2, is_group, user_msg_id, image):
         ]
     })
 
-    clear_folder("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/cache")
-    clear_folder("/root/.config/QQ/NapCat/temp")
+    delete_images("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/cache")
+    delete_images("/root/.config/QQ")
 
 async def call_api(ws, action: str, params: dict = None):
     global echo_id
