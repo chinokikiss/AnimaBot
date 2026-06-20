@@ -136,8 +136,6 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
             "user_id": id2,
             "group_id": id1,
             "message": [
-                {"type": "reply", "data": {"id": str(user_msg_id)}},
-                {"type": "at", "data": {"qq": str(user_id)}},
                 {"type": "image", "data": {"file": f"base64://{b64}"}}
             ]
         })
@@ -180,10 +178,16 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
             }
         ]
         if is_group:
-            await call_api(ws, "send_group_forward_msg", {
-                "group_id": id1,
-                "messages": params_nodes
-            })
+            if is_nsfw:
+                await call_api(ws, "send_private_forward_msg", {
+                    "user_id": id2,
+                    "messages": params_nodes
+                })
+            else:
+                await call_api(ws, "send_group_forward_msg", {
+                    "group_id": id1,
+                    "messages": params_nodes
+                })
         else:
             await call_api(ws, "send_private_forward_msg", {
                 "user_id": id1,
