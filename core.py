@@ -183,6 +183,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
         if is_group:
             if is_nsfw:
                 await call_api(ws, "send_private_forward_msg", {
+                    "group_id": id1,
                     "user_id": id2,
                     "messages": params_nodes
                 })
