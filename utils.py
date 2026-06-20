@@ -33,15 +33,7 @@ async def check_nsfw(data) -> dict:
             resp.raise_for_status()
             result = resp.json()
             nsfw_score = result.get("nsfw_score", 0)
-            suggestion = result.get("suggestion", "pass")
-            risk_level = result.get("risk_level", "low")
-            is_nsfw = result.get("is_nsfw", False)
-            return (
-                is_nsfw
-                or nsfw_score > 0.5
-                or suggestion in ("review", "block")
-                or risk_level in ("medium", "high")
-            )
+            return nsfw_score > 0.5
     except:
         log("审核API出错！")
         return True
