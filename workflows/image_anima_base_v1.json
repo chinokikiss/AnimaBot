@@ -48,7 +48,7 @@
   },
   "75": {
     "inputs": {
-      "text": "worst quality,low quality,score_1,score_2,score_3,blurry,jpeg artifacts,sepia,low quality,worst quality,blurry,bad anatomy,extra limbs,deformed,watermark,text,signature,bareness,artifacts,hands,copyrights name,jpeg_artifacts,scan_artifacts,bad hands,missing fingers,extra digit,fewer digits,artistic error,ye-pop,deviantart,logo,patreon logo,blurry",
+      "text": "worst quality, low quality, score_1, score_2, score_3, artist name",
       "clip": [
         "92",
         1
