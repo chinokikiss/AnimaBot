@@ -1,0 +1,48 @@
+{
+  "1": {
+    "inputs": {
+      "image_data": ""
+    },
+    "class_type": "LoadImageFromBase64",
+    "_meta": {
+      "title": "LoadImageFromBase64"
+    }
+  },
+  "2": {
+    "inputs": {
+      "model_name": "4x-AnimeSharp.safetensors"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "加载放大模型"
+    }
+  },
+  "3": {
+    "inputs": {
+      "upscale_model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "ImageUpscaleWithModel",
+    "_meta": {
+      "title": "使用模型放大图像"
+    }
+  },
+  "4": {
+    "inputs": {
+      "images": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "ImageDataOutput",
+    "_meta": {
+      "title": "ImageDataOutput"
+    }
+  }
+}

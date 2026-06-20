@@ -1,0 +1,4 @@
+openai
+lxml
+httpx
+websockets
