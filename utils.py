@@ -38,7 +38,7 @@ async def check_nsfw(data) -> dict:
             is_nsfw = result.get("is_nsfw", False)
             return (
                 is_nsfw
-                or nsfw_score > 0.3
+                or nsfw_score > 0.5
                 or suggestion in ("review", "block")
                 or risk_level in ("medium", "high")
             )
