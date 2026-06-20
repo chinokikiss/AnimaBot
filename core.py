@@ -63,12 +63,12 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     })
     msg_id = resp.get("data", {}).get("message_id")
 
-    prompt, width, height, steps, cfg, use_agent = extract_prompt_params(user_text)
+    prompt, width, height, steps, cfg, use_agent = await extract_prompt_params(user_text)
 
     if use_agent:
         # ── LLM_Prompt_Formatter: 生成Prompt ──
         llm_prompt_formatter = LLM_Prompt_Formatter()
-        prompt, response = llm_prompt_formatter.process_text(
+        prompt, response = await llm_prompt_formatter.process_text(
             api_key=config.get("api_key"),
             api_url=config.get("api_url"),
             model_name=config.get("model_name"),
@@ -100,7 +100,8 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
             "76": {"steps": steps, "cfg": cfg},
         }
     )
-    img_bytes = run_workflow(workflow)[0]
+    imgs = await run_workflow(workflow)
+    img_bytes = imgs[0]
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     t2 = time.time()
     
@@ -226,7 +227,8 @@ async def upscale(ws, id1, id2, is_group, user_msg_id, image):
             "1": {"image_data": b64},
         }
     )
-    img_bytes = run_workflow(workflow)[0]
+    imgs = await run_workflow(workflow)
+    img_bytes = imgs[0]
     b64 = base64.b64encode(img_bytes).decode("utf-8")
 
     tt = time.time() - t0

@@ -1,7 +1,7 @@
 import os
 import re
 import json
-from openai import OpenAI
+from openai import AsyncOpenAI
 from prompt_agent.agent_core import PromptAgent
 from prompt_agent import utils
 
@@ -293,7 +293,7 @@ class LLM_Prompt_Formatter:
 
     # ── 主方法 ─────────────────────────────────────────────────────────
 
-    def process_text(self, api_key, api_url, model_name, mode, user_text, thinking, agent_effort, image=None, unique_id=None):
+    async def process_text(self, api_key, api_url, model_name, mode, user_text, thinking, agent_effort, image=None, unique_id=None):
         config = load_api_config()
         final_key, final_url = self._resolve_credentials(config, api_key, api_url)
 
@@ -306,7 +306,7 @@ class LLM_Prompt_Formatter:
                     mode=mode, thinking=thinking, config=config, effort=agent_effort,
                     unique_id=unique_id,
                 )
-                return agent.run(user_text, image=image)
+                return await agent.run(user_text, image=image)
             except Exception as e:
                 print(f"{BColors.FAIL}[LLM_Prompt_Formatter]: Agent 模式失败: {e}，回退为普通模式{BColors.ENDC}")
 
@@ -319,7 +319,7 @@ class LLM_Prompt_Formatter:
                 print(f"{BColors.FAIL}[LLM_Prompt_Formatter]: API KEY 缺失！请在 LPF_config.json 中配置。{BColors.ENDC}")
                 raise RuntimeError(f"LLM_Prompt_Formatter failed: API KEY 缺失！请在 LPF_config.json 中配置")
 
-            client = OpenAI(api_key=final_key, base_url=final_url)
+            client = AsyncOpenAI(api_key=final_key, base_url=final_url)
             messages_list = self._build_normal_messages(
                 system_content, fewshot_user, fewshot_assistant, user_text, image
             )
@@ -329,7 +329,7 @@ class LLM_Prompt_Formatter:
 
             for attempt in range(max_retries + 1):
                 try:
-                    response = client.chat.completions.create(
+                    response = await client.chat.completions.create(
                         model=model_name, messages=messages_list,
                         temperature=0.7, extra_body=extra_body,
                     )

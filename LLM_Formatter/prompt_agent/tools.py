@@ -1,33 +1,8 @@
-"""
-prompt_agent/tools.py
-----------------------
-search_tags / get_related_tags 工具实现，通过 MCP Streamable HTTP 协议
-调用 DanbooruSearch MCP 服务。
-
-MCP 服务地址：https://sakizuki-danboorusearch.hf.space/mcp/mcp
-协议：Streamable HTTP（POST JSON-RPC，非 SSE）
-
-依赖：
-  pip install httpx
-
-工具定义（TOOLS）在模块加载时通过 load_tools_from_mcp() 从 MCP 服务端动态拉取，
-与服务端 tools/list 响应保持一致，无需本地维护描述文本。
-拉取失败时回退到内置的 FALLBACK_TOOLS，保证服务可用性。
-
-search_tags 使用 search_mode 预设策略（v2 API）：
-  "full_scene"       — 完整场景→提示词
-  "concept_explore"  — 模糊概念探索，宽召回
-  "subject_describe" — 描述主体以匹配标签
-  "precise_lookup"   — 精确查找/拼写纠错
-
-HF Space 冷启动约 30~60 秒，_call_mcp 设置 timeout=90。
-"""
-
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
-import threading
 import time
 import httpx
 
@@ -35,19 +10,12 @@ _MCP_URL_HF = "https://sakizuki-danboorusearch.hf.space/mcp/mcp"
 _MCP_URL_MS = "https://sakizuki-danboorusearchonline.ms.show/mcp/mcp"
 _TIMEOUT = 90
 
-# 最近一次实际服务的 MCP 端点（仅供 get_active_endpoint / 健康展示）。
-# 调用顺序固定 HF 优先、MS 兜底（见 _rpc），不再用它作粘性首选。
 _active_url: str = _MCP_URL_HF
-
-# 保护 _active_url 并发写入
-_lock = threading.Lock()
 
 
 def get_active_endpoint() -> str:
-    """返回当前活跃的 MCP 端点标识 ('hf' / 'ms')。"""
     return "ms" if _active_url == _MCP_URL_MS else "hf"
 
-# 回退用的工具定义，仅在 tools/list 拉取失败时使用
 _FALLBACK_TOOLS = [
     {
         "type": "function",
@@ -135,19 +103,13 @@ _FALLBACK_TOOLS = [
     },
 ]
 
-
 _HEADERS_BASE = {
     "Content-Type": "application/json",
     "Accept":       "application/json, text/event-stream",
 }
 
-def _new_session_id(client: httpx.Client, url: str) -> str:
-    """在给定 client 上发送 initialize 握手，返回服务器分配的 session id。
 
-    **关键**：握手与随后的 tools/call 复用同一个 client（同一持久连接），
-    使两步落在**同一 HF 副本**。否则 HF 多副本部署下，握手与调用走不同连接、
-    被 LB 路由到不同副本，session id 跨副本失配导致请求失败、误判 HF 不可用。
-    """
+async def _new_session_id(client: httpx.AsyncClient, url: str) -> str:
     payload = {
         "jsonrpc": "2.0",
         "id":      0,
@@ -158,7 +120,7 @@ def _new_session_id(client: httpx.Client, url: str) -> str:
             "capabilities":    {},
         },
     }
-    resp = client.post(url, json=payload, headers=_HEADERS_BASE)
+    resp = await client.post(url, json=payload, headers=_HEADERS_BASE)
     session_id = resp.headers.get("mcp-session-id")
     if not session_id:
         resp.raise_for_status()
@@ -167,11 +129,6 @@ def _new_session_id(client: httpx.Client, url: str) -> str:
 
 
 def _parse_response(resp: httpx.Response) -> dict:
-    """
-    解析 MCP 响应，兼容两种格式：
-    - application/json：直接 resp.json()
-    - text/event-stream：从 data: 行提取第一条 JSON
-    """
     ct = resp.headers.get("content-type", "")
     if "text/event-stream" in ct:
         for line in resp.text.splitlines():
@@ -181,28 +138,21 @@ def _parse_response(resp: httpx.Response) -> dict:
     return resp.json()
 
 
-def _rpc(method: str, params: dict, req_id: int = 1) -> dict:
-    """握手 + JSON-RPC 调用；二者复用同一连接（同一副本）。
-
-    端点顺序**固定 HF 优先、MS 兜底**——不再用粘性的 _active_url 作首选，
-    避免 HF 一次偶发失败后被永久流放到 MS。_active_url 仅记录"最近一次实际服务
-    的端点"，供健康展示。
-    """
+async def _rpc(method: str, params: dict, req_id: int = 1) -> dict:
     global _active_url
 
     last_error = None
     for url in (_MCP_URL_HF, _MCP_URL_MS):
         try:
-            # 单次 _rpc 用一个 client，握手与调用共用一条连接 → 同一副本
-            with httpx.Client(timeout=_TIMEOUT) as client:
-                session_id = _new_session_id(client, url)
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                session_id = await _new_session_id(client, url)
                 payload = {
                     "jsonrpc": "2.0",
                     "id":      req_id,
                     "method":  method,
                     "params":  params,
                 }
-                resp = client.post(
+                resp = await client.post(
                     url,
                     json=payload,
                     headers={**_HEADERS_BASE, "mcp-session-id": session_id},
@@ -215,23 +165,17 @@ def _rpc(method: str, params: dict, req_id: int = 1) -> dict:
 
             if url == _MCP_URL_MS:
                 print("[tools] HF 端点本次失败，已回退 MS", file=sys.stderr)
-            with _lock:
-                _active_url = url  # 记录本次实际服务端点（供健康展示）
+            _active_url = url
             return rpc_resp.get("result", {})
 
         except Exception as e:
             last_error = e
             continue
 
-    raise last_error
+    raise last_error  # type: ignore
 
 
 def _probe(url: str, timeout: float = 20) -> dict:
-    """
-    向单个端点执行一次真实 search_tags 检索（query="1girl", search_mode="precise_lookup"），
-    验证 MCP 服务和后端数据库均可用。
-    返回 {"ok": bool, "latency_ms": int?, "error": str?}。
-    """
     init_payload = {
         "jsonrpc": "2.0",
         "id":      0,
@@ -244,14 +188,12 @@ def _probe(url: str, timeout: float = 20) -> dict:
     }
     t0 = time.monotonic()
     try:
-        # 1. 握手拿 session id
         init_resp = httpx.post(url, json=init_payload, headers=_HEADERS_BASE, timeout=timeout)
         init_resp.raise_for_status()
         session_id = init_resp.headers.get("mcp-session-id")
         if not session_id:
             return {"ok": False, "error": "响应中没有 mcp-session-id"}
 
-        # 2. 真实检索
         call_payload = {
             "jsonrpc": "2.0",
             "id":      1,
@@ -284,10 +226,6 @@ def _probe(url: str, timeout: float = 20) -> dict:
 
 
 def check_mcp_health(timeout: float = 15) -> dict:
-    """
-    并发检查 HF 和 MS 两个端点的健康状态。
-    返回 {"hf": {...}, "ms": {...}, "active": "hf"|"ms"}。
-    """
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=2) as pool:
         hf_f = pool.submit(_probe, _MCP_URL_HF, timeout)
@@ -295,13 +233,9 @@ def check_mcp_health(timeout: float = 15) -> dict:
     return {"hf": hf_f.result(), "ms": ms_f.result(), "active": get_active_endpoint()}
 
 
-def load_tools_from_mcp() -> list[dict]:
-    """
-    调用 MCP tools/list，将返回的工具定义转换为 OpenAI function calling 格式。
-    拉取失败时打印警告并返回 _FALLBACK_TOOLS。
-    """
+async def load_tools_from_mcp() -> list[dict]:
     try:
-        result = _rpc("tools/list", {})
+        result = await _rpc("tools/list", {})
         mcp_tools = result.get("tools", [])
         if not mcp_tools:
             raise RuntimeError("tools/list 返回的工具列表为空")
@@ -325,32 +259,25 @@ def load_tools_from_mcp() -> list[dict]:
         return _FALLBACK_TOOLS
 
 
-# 懒加载：首次调用 get_tools() 时从 MCP 拉取工具定义，后续缓存
 _TOOLS_CACHE = None
 
-def get_tools():
-    """获取工具定义列表（懒加载，首次调用时从 MCP 拉取）。"""
+async def get_tools():
     global _TOOLS_CACHE
     if _TOOLS_CACHE is None:
-        _TOOLS_CACHE = load_tools_from_mcp()
+        _TOOLS_CACHE = await load_tools_from_mcp()
     return _TOOLS_CACHE
 
-TOOLS = []  # 兼容旧 import，实际使用请调用 get_tools()
+TOOLS = []
 
 
-def _call_mcp(tool_name: str, arguments: dict) -> dict:
-    """
-    发送 tools/call 请求，429 时指数退避重试（5s → 10s → 20s，最多 3 次）。
-    返回解析后的结果 dict，出错时返回 {"error": "..."} 。
-    """
+async def _call_mcp(tool_name: str, arguments: dict) -> dict:
     retry_delays = [5, 10, 20]
     last_error = None
 
-    for attempt in range(len(retry_delays) + 1):  # 首次 + 3 次重试
+    for attempt in range(len(retry_delays) + 1):
         try:
-            result = _rpc("tools/call", {"name": tool_name, "arguments": arguments})
+            result = await _rpc("tools/call", {"name": tool_name, "arguments": arguments})
 
-            # MCP tools/call 结果在 result.content 里：list[{type, text}]
             content_blocks = result.get("content", [])
             for block in content_blocks:
                 if block.get("type") == "text":
@@ -368,7 +295,7 @@ def _call_mcp(tool_name: str, arguments: dict) -> dict:
                     f"[tools] 429 限流，{delay}s 后重试（第 {attempt + 1}/{len(retry_delays)} 次）…",
                     file=sys.stderr,
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
                 last_error = e
                 continue
             return {"error": str(e)}
@@ -380,15 +307,14 @@ def _call_mcp(tool_name: str, arguments: dict) -> dict:
     return {"error": f"429 限流，已重试 {len(retry_delays)} 次仍失败: {str(last_error)}"}
 
 
-def execute_search_tags(
+async def execute_search_tags(
     query: str,
     search_mode: str = "full_scene",
     category: str = "all",
     show_nsfw: bool = True,
     include_wiki: bool = False,
 ) -> str:
-    """调用 MCP search_tags，直接透传服务端返回的原始 JSON 字符串。"""
-    data = _call_mcp("search_tags", {
+    data = await _call_mcp("search_tags", {
         "query":        query,
         "search_mode":  search_mode,
         "category":     category,
@@ -402,17 +328,16 @@ def execute_search_tags(
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def execute_get_related_tags(
+async def execute_get_related_tags(
     tags: list[str],
     limit: int = 30,
     show_nsfw: bool = True,
     include_wiki: bool = False,
 ) -> str:
-    """调用 MCP get_related_tags，直接透传服务端返回的原始 JSON 字符串。"""
     if not tags:
         return json.dumps({"error": "tags 列表为空"}, ensure_ascii=False)
 
-    data = _call_mcp("get_related_tags", {
+    data = await _call_mcp("get_related_tags", {
         "tags":         tags,
         "limit":        limit,
         "show_nsfw":    show_nsfw,
@@ -425,17 +350,16 @@ def execute_get_related_tags(
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def execute_get_artist_recommendations(
+async def execute_get_artist_recommendations(
     tags: list[str],
     limit: int = 30,
     min_cooc: int = 3,
     show_nsfw: bool = True,
 ) -> str:
-    """调用 MCP get_artist_recommendations，直接透传服务端返回的原始 JSON 字符串。"""
     if not tags:
         return json.dumps({"error": "tags 列表为空"}, ensure_ascii=False)
 
-    data = _call_mcp("get_artist_recommendations", {
+    data = await _call_mcp("get_artist_recommendations", {
         "tags":      tags,
         "limit":     limit,
         "min_cooc":  min_cooc,
@@ -448,27 +372,23 @@ def execute_get_artist_recommendations(
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def execute_get_anima_format() -> str:
-    """调用 MCP get_anima_format，获取 Anima 模型的提示词格式规范。"""
-    data = _call_mcp("get_anima_format", {})
+async def execute_get_anima_format() -> str:
+    data = await _call_mcp("get_anima_format", {})
 
     if "error" in data:
         return json.dumps({"error": data["error"]}, ensure_ascii=False)
 
-    # MCP 返回的 raw 文本直接透传
     if "raw" in data:
         return data["raw"]
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def execute_get_newbie_format() -> str:
-    """调用 MCP get_newbie_format，获取 NewBie 模型的提示词格式规范。"""
-    data = _call_mcp("get_newbie_format", {})
+async def execute_get_newbie_format() -> str:
+    data = await _call_mcp("get_newbie_format", {})
 
     if "error" in data:
         return json.dumps({"error": data["error"]}, ensure_ascii=False)
 
-    # MCP 返回的 raw 文本直接透传
     if "raw" in data:
         return data["raw"]
     return json.dumps(data, ensure_ascii=False, indent=2)

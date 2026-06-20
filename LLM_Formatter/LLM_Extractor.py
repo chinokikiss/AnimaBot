@@ -1,6 +1,6 @@
 import json
 import re
-from openai import OpenAI
+from openai import AsyncOpenAI
 from .LLM_Node import load_api_config, get_platform_settings
 
 
@@ -30,7 +30,7 @@ Quality hints:
 Output ONLY valid JSON, no markdown, no explanation."""
 
 
-def extract_prompt_params(text: str):
+async def extract_prompt_params(text: str):
     config = load_api_config()
 
     api_key = config.get("api_key", "")
@@ -38,7 +38,7 @@ def extract_prompt_params(text: str):
     model_name = config.get("model_name", "")
     thinking = config.get("thinking", "")
 
-    client = OpenAI(api_key=api_key, base_url=api_url)
+    client = AsyncOpenAI(api_key=api_key, base_url=api_url)
     extra_body = get_platform_settings(api_url, model_name, thinking)
 
     messages = [
@@ -46,7 +46,7 @@ def extract_prompt_params(text: str):
         {"role": "user", "content": text},
     ]
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=model_name, messages=messages,
         temperature=0.3, extra_body=extra_body,
     )
