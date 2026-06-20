@@ -27,16 +27,16 @@ def log(*args, **kwargs):
         print(*args, **kwargs)
 
 async def check_nsfw(data) -> dict:
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(API_URL, files={"file": ("image.png", data, "image/png")})
-            resp.raise_for_status()
-            result = resp.json()
-            nsfw_score = result.get("nsfw_score", 0)
-            return nsfw_score > 0.5
-    except:
-        log("审核API出错！")
-        return True
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(API_URL, files={"file": ("image.png", data, "image/png")})
+                resp.raise_for_status()
+                result = resp.json()
+                nsfw_score = result.get("nsfw_score", 0)
+                return nsfw_score >= 0.5
+        except:
+            pass
 
 def delete_images(folder_path):
     img_exts = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
