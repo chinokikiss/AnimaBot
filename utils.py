@@ -26,10 +26,10 @@ def log(*args, **kwargs):
     if _load_logging_flag():
         print(*args, **kwargs)
 
-def check_nsfw(data) -> dict:
+async def check_nsfw(data) -> dict:
     try:
-        with httpx.Client() as client:
-            resp = client.post(API_URL, files={"file": ("image.png", data, "image/png")})
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(API_URL, files={"file": ("image.png", data, "image/png")})
             resp.raise_for_status()
             result = resp.json()
             nsfw_score = result.get("nsfw_score", 0)
