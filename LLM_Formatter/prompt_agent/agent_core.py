@@ -318,15 +318,17 @@ class PromptAgent:
             new_list = args.get("new_strings", [])
             if old_list:
                 modified = current
-                replacements = 0
+                changes = []
                 for old, new in zip(old_list, new_list):
                     if old in modified:
                         modified = modified.replace(old, new)
-                        replacements += 1
+                        changes.append((old, new))
                 self._selfcheck_content = modified
+                change_lines = [f"「{o}」→「{n}」" for o, n in changes]
                 return json.dumps({
-                    "status": "ok", "modified": replacements > 0,
-                    "note": f"已完成 {replacements} 处替换",
+                    "status": "ok", "modified": len(changes) > 0,
+                    "note": f"已完成 {len(changes)} 处替换",
+                    "changes": change_lines,
                     "new_content": modified,
                 }, ensure_ascii=False)
             else:
@@ -1091,7 +1093,12 @@ class PromptAgent:
                         result_str = await self._execute_tool("replace_prompt", args)
                         result = json.loads(result_str)
                         content = result.get("new_content", content)
-                        _log_ok(f"自检修改完成，新内容长度: {len(content)} 字符")
+                        changes = result.get("changes")
+                        if changes:
+                            for c in changes:
+                                _log_ok(f"  {c}")
+                        else:
+                            _log_ok(f"  完全重写提示词")
             else:
                 _log("自检通过，无需修改")
         except Exception as e:

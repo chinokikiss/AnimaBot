@@ -2,6 +2,7 @@ import asyncio
 import json
 import base64
 import re
+import random
 import time
 from pathlib import Path
 import httpx
@@ -97,7 +98,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
         overrides={
             "77": {"text": prompt},
             "74": {"width": width, "height": height},
-            "76": {"steps": steps, "cfg": cfg},
+            "76": {"steps": steps, "cfg": cfg, "seed": random.randint(0, 2**32 - 1)},
         }
     )
     imgs = await run_workflow(workflow)
@@ -276,7 +277,7 @@ async def handle_event(ws, data: dict):
         message_id = data.get("message_id", "")
         msg_array = data.get("message", [])
         clean_msg = re.sub(r'^(?:\s|@\S+|\[CQ:[^\]]+\])*', '', raw_msg)
-        is_drawing_command = clean_msg.startswith('绘图') or clean_msg.startswith('画图') or clean_msg.startswith('绘画') or clean_msg.startswith('画画')
+        is_drawing_command = clean_msg.startswith('绘图') or clean_msg.startswith('画图') or clean_msg.startswith('绘画') or clean_msg.startswith('画') or clean_msg.startswith('绘制')
         is_upscale_command = clean_msg.startswith('放大')
         
         if msg_type == "private":

@@ -11,7 +11,7 @@ BCOLORS_ENDC = '\033[0m'
 SYSTEM_PROMPT = """You are a drawing request parser. The user will give a request like "画一个女孩，横图，高质量，水彩风格".
 
 Extract structured information from it. Return ONLY a JSON object with these fields:
-- "prompt": the original text with resolution/quality keywords/绘图/画图/绘画/画画 removed (keep the core subject description as-is)
+- "prompt": the original text with resolution/quality keywords/绘图/画图/绘画/画/绘制 removed (keep the core subject description as-is)
 - "width": image width in pixels (number, default 1024)
 - "height": image height in pixels (number, default 1536)
 - "steps": sampling steps (number, default 10)
@@ -23,8 +23,8 @@ Resolution hints:
 - 方图/square/1:1 -> 1024x1024
 
 Quality hints:
-- 高质量/high quality/masterpiece -> steps=30, cfg=5
-- 快速/fast/draft -> steps=10, cfg=1
+- 高质量 -> steps=30, cfg=5
+- 快速 -> steps=10, cfg=1
 - 默认 -> steps=10, cfg=1
 
 Output ONLY valid JSON, no markdown, no explanation."""
