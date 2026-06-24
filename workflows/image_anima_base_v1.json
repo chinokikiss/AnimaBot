@@ -50,8 +50,8 @@
     "inputs": {
       "text": "worst quality, low quality, score_1, score_2, score_3, artist name",
       "clip": [
-        "92",
-        1
+        "71",
+        0
       ]
     },
     "class_type": "CLIPTextEncode",
@@ -61,18 +61,18 @@
   },
   "76": {
     "inputs": {
-      "seed": 729994705694404,
+      "seed": 44662701082104,
       "steps": 10,
       "cfg": 1,
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
       "model": [
-        "92",
+        "83",
         0
       ],
       "positive": [
-        "77",
+        "87",
         0
       ],
       "negative": [
@@ -91,18 +91,18 @@
   },
   "77": {
     "inputs": {
-      "text": "@4x0style, 1girl, long hair, low ponytail, blush, bangs, blue eyes, blonde hair, hair ribbon, blue ribbon, ahoge, small breasts, snowflake hair ornament, solo, upper body, off shoulder, holding, holding food, crepe, strawberry, fruit, cream, food on face",
+      "text": "masterpiece, best quality, very aesthetic, score_7, sensitive,\n2girls, loli, flat chest, completely nude, barefoot, long hair, no genitals, covering body, convenient arm,\nsunna_(zenless_zone_zero), aqua hair, aqua streaks, twintails, blue eyes,\nnangong_yu, black hair, red eyes,\nmutual hug, cuddling, closed eyes, yuri, spread legs, arched back, ahegao, interlocked_fingers, holding_hands,\n(full body:3), simple background, monochrome background, soft focus, light particles, muted colors, pastels,\n@theflatfacadeds\n\nsensual entwined bodies, erotic skin contact, trembling with pleasure, dreamy lustful atmosphere, floating light motes",
       "clip": [
-        "92",
-        1
+        "71",
+        0
       ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Positive Prompt)"
+      "title": "画风与角色"
     }
   },
-  "88": {
+  "78": {
     "inputs": {
       "unet_name": "anima-base-v1.0.safetensors",
       "weight_dtype": "default"
@@ -112,26 +112,34 @@
       "title": "UNet加载器"
     }
   },
-  "92": {
+  "81": {
     "inputs": {
-      "lora_name": "anima-turbo-lora-v0.2.safetensors",
-      "strength_model": 1,
-      "strength_clip": 1,
+      "shift": 3,
       "model": [
-        "88",
-        0
-      ],
-      "clip": [
-        "71",
+        "78",
         0
       ]
     },
-    "class_type": "LoraLoader",
+    "class_type": "ModelSamplingAuraFlow",
     "_meta": {
-      "title": "加载LoRA"
+      "title": "采样算法（AuraFlow）"
     }
   },
-  "93": {
+  "83": {
+    "inputs": {
+      "lora_name": "anima-turbo-lora-v0.2.safetensors",
+      "strength_model": 1,
+      "model": [
+        "81",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRA加载器（仅模型）"
+    }
+  },
+  "84": {
     "inputs": {
       "images": [
         "73",
@@ -141,6 +149,35 @@
     "class_type": "ImageDataOutput",
     "_meta": {
       "title": "ImageDataOutput"
+    }
+  },
+  "86": {
+    "inputs": {
+      "text": "The composition is a wide full-body shot of two petite nude girls entangled in an erotic embrace against a plain pastel backdrop, their legs spread and backs subtly arched in pleasure while arms and limbs strategically conceal intimate areas. Soft diffused lighting wraps around their delicate silhouettes, with tiny glowing particles drifting gently in the air. The overall palette is muted pastel with a dreamy soft-focus finish, balancing erotic tension with ethereal beauty.",
+      "clip": [
+        "71",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "动作与场景"
+    }
+  },
+  "87": {
+    "inputs": {
+      "conditioning_to": [
+        "77",
+        0
+      ],
+      "conditioning_from": [
+        "86",
+        0
+      ]
+    },
+    "class_type": "ConditioningConcat",
+    "_meta": {
+      "title": "条件连接"
     }
   }
 }
