@@ -1043,22 +1043,21 @@ class PromptAgent:
         return content, rounds, total_tokens, captured_format
 
     async def _run_self_check(self, content, total_tokens, user_text=""):
-        """Anima 模式自检：调用 LLM 检查最终提示词是否符合清单要求。"""
+        """Anima 模式自检：调用 LLM 检查最终提示词是否符合要求。"""
         if self.mode != "Anima" or not content.strip():
             return content, total_tokens
 
-        _log("进入自检阶段：LLM 检查提示词是否符合清单要求")
+        _log("进入自检阶段：LLM 检查提示词是否符合要求")
         self._selfcheck_content = content
         selfcheck_prompt = (
             f"【最终自检】请对下方输出的提示词进行逐项检查。\n\n"
             f"=== 用户要求 ===\n{user_text}\n\n"
             f"=== 当前输出 ===\n{content}\n\n"
             f"{_ANIMA_SELF_CHECK}\n\n"
-            f"如果发现不符合清单要求的问题（如标签互斥、人数不一致、"
-            f"细节标签超限、场景不合理等），请调用 replace_prompt 工具修正。\n"
+            f"如果发现不符合清单要求或用户要求的问题，请调用 replace_prompt 工具修正。\n"
             f"- 要替换多处内容：提供 old_strings 和 new_strings 列表，两列表一一对应\n"
             f"- 要完全重写：仅提供 new_strings（不提供 old_strings），new_strings[0] 作为全新内容\n"
-            f"如需多次修改，可分多次调用。如全部通过，回复「自检通过」即可。\n\n"
+            f"如全部通过，回复「自检通过」即可。\n\n"
             f"注意：仅可使用 replace_prompt 工具，不要调用其他工具。"
         )
         check_messages = [
@@ -1112,9 +1111,11 @@ class PromptAgent:
         return self._parse_newbie_output(content)
 
     def _parse_anima_output(self, content):
-        _log("Anima 模式: 按 Markdown 标题分割输出")
-        prompt_match = re.search(r'#{2,}\s*Prompt\s*\n(.*?)(?=\n#{2,}|\Z)', content, re.DOTALL)
-        explanation_match = re.search(r'#{2,}\s*中文解释\s*\n(.*)', content, re.DOTALL)
+        _log("Anima 模式: 按 Markdown 标题分割输出 (取最后匹配)")
+        prompt_matches = list(re.finditer(r'#{2,}\s*Prompt\s*\n(.*?)(?=\n#{2,}|\Z)', content, re.DOTALL))
+        prompt_match = prompt_matches[-1] if prompt_matches else None
+        explanation_matches = list(re.finditer(r'#{2,}\s*中文解释\s*\n(.*)', content, re.DOTALL))
+        explanation_match = explanation_matches[-1] if explanation_matches else None
         expl_text = explanation_match.group(1) if explanation_match else None
         if expl_text is None:
             headings = list(re.finditer(r'(?m)^#{2,}[^\n]*\n', content))
@@ -1122,21 +1123,25 @@ class PromptAgent:
                 expl_text = content[headings[1].end():]
                 _log_warn("第二个标题非「中文解释」，已按位置回退提取解释段")
 
-        if prompt_match and expl_text is not None:
-            xml_out = utils.strip_code_fences(prompt_match.group(1))
-            text_out = utils.strip_code_fences(expl_text)
-            _log_ok(f"成功按标题分割: Prompt={len(xml_out)} chars, 解释={len(text_out)} chars")
-        elif prompt_match:
-            xml_out = utils.strip_code_fences(prompt_match.group(1))
-            text_out = ""
-            _log_warn("未找到解释段标题，仅提取 Prompt 部分")
+        if prompt_match:
+            prompt_content = utils.strip_code_fences(prompt_match.group(1)).strip()
+            lines = prompt_content.split('\n')
+            tag_str = '\n'.join(lines[:-1]).strip()
+            nl_str = lines[-1].strip()
+            xml_out = [tag_str, nl_str]
+            text_out = utils.strip_code_fences(expl_text) if expl_text is not None else ""
+            _log_ok(f"成功按标题分割: Tags={len(tag_str)} chars, NL={len(nl_str)} chars, 解释={len(text_out)} chars")
+            if not expl_text:
+                _log_warn("未找到解释段标题，仅提取 Prompt 部分")
         else:
             _log_warn("未找到 ## Prompt 标题，回退到按行分离中英文")
-            xml_out, text_out = _split_by_language(content)
-            xml_out = utils.strip_code_fences(xml_out)
-            if not xml_out:
+            en_part, zh_part = _split_by_language(content)
+            en_part = utils.strip_code_fences(en_part)
+            if not en_part:
                 _log_warn("Anima 模式未检测到英文内容，返回完整响应")
-                xml_out = content
+                en_part = content
+            xml_out = [en_part, ""]
+            text_out = zh_part
         return xml_out, text_out
 
     def _parse_newbie_output(self, content):

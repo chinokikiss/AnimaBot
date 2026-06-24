@@ -64,7 +64,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     })
     msg_id = resp.get("data", {}).get("message_id")
 
-    prompt, width, height, steps, cfg, use_agent = await extract_prompt_params(user_text)
+    prompt, width, height, use_agent = await extract_prompt_params(user_text)
 
     if use_agent:
         # ── LLM_Prompt_Formatter: 生成Prompt ──
@@ -96,9 +96,10 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     workflow = load_workflow(
         path=Path("workflows") / "image_anima_base_v1.json",
         overrides={
-            "77": {"text": prompt},
+            "77": {"text": prompt[0]},
+            "86": {"text": prompt[1]},
             "74": {"width": width, "height": height},
-            "76": {"steps": steps, "cfg": cfg, "seed": random.randint(0, 2**32 - 1)},
+            "76": {"seed": random.randint(0, 2**32 - 1)},
         }
     )
     imgs = await run_workflow(workflow)
@@ -157,7 +158,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                     "name": "Anima",
                     "uin": str(self_id),
                     "content": [
-                        {"type": "text", "data": {"text": f"Prompt: {prompt}"}}
+                        {"type": "text", "data": {"text": f"Tag Prompt: {prompt[0]}"}}
                     ]
                 }
             },
@@ -167,7 +168,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                     "name": "Anima",
                     "uin": str(self_id),
                     "content": [
-                        {"type": "text", "data": {"text": f"Size: {size_str}\nSteps: {steps}\nCFG: {cfg}"}}
+                        {"type": "text", "data": {"text": f"Natural Language Prompt: {prompt[1]}"}}
                     ]
                 }
             },
@@ -177,7 +178,12 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                     "name": "Anima",
                     "uin": str(self_id),
                     "content": [
-                        {"type": "text", "data": {"text": f"pt: {pt:.2f}s | it: {it:.2f}s | tt: {tt:.2f}s"}}
+                        {
+                            "type": "text", 
+                            "data": {
+                                "text": f"Size: {size_str}\npt: {pt:.2f}s | it: {it:.2f}s | tt: {tt:.2f}s"
+                            }
+                        }
                     ]
                 }
             }

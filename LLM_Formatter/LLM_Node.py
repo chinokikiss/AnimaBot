@@ -272,12 +272,15 @@ class LLM_Prompt_Formatter:
         Anima: 中英文分离。NewBie: 三级 XML 提取策略。
         """
         if is_anima:
-            xml_content, text_content = utils.split_by_language(full_response)
-            xml_content = utils.strip_code_fences(xml_content)
-            if not xml_content:
+            en_part, text_content = utils.split_by_language(full_response)
+            en_part = utils.strip_code_fences(en_part)
+            if not en_part:
                 print(f"{BColors.WARNING}[LLM_Prompt_Formatter]: Anima模式未检测到英文内容，返回完整响应。{BColors.ENDC}")
-                xml_content = full_response
-            return xml_content, text_content
+                en_part = full_response
+            lines = en_part.strip().split('\n')
+            tag_str = '\n'.join(lines[:-1]).strip()
+            nl_str = lines[-1].strip()
+            return [tag_str, nl_str], text_content
 
         # NewBie mode: 严格错误处理
         if "```" not in full_response and "<img>" not in full_response:

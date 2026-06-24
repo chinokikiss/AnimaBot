@@ -14,18 +14,10 @@ Extract structured information from it. Return ONLY a JSON object with these fie
 - "prompt": the original text with resolution/quality keywords/绘图/画图/绘画/画/绘制 removed (keep the core subject description as-is)
 - "width": image width in pixels (number, default 1024)
 - "height": image height in pixels (number, default 1536)
-- "steps": sampling steps (number, default 10)
-- "cfg": CFG scale (number, default 1)
-
 Resolution hints:
 - 横图/wide/landscape/16:9 -> 1456x816
 - 竖图/portrait/9:16/3:4 -> 1024x1536
 - 方图/square/1:1 -> 1024x1024
-
-Quality hints:
-- 高质量 -> steps=30, cfg=5
-- 快速 -> steps=10, cfg=1
-- 默认 -> steps=10, cfg=1
 
 Output ONLY valid JSON, no markdown, no explanation."""
 
@@ -66,4 +58,4 @@ async def extract_prompt_params(text: str):
     
     use_agent = bool(re.search(r'[\u4e00-\u9fff]', data.get("prompt", text)))
 
-    return data.get("prompt", text), int(data.get("width", 1024)), int(data.get("height", 1536)), int(data.get("steps", 10)), float(data.get("cfg", 1)), use_agent
+    return data.get("prompt", text), int(data.get("width", 1024)), int(data.get("height", 1536)), use_agent
