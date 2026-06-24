@@ -11,11 +11,9 @@ from prompt_agent.agent_prompts import (
     get_format_tool_directive,
     LOW_ASSEMBLY_PROMPT,
     QUERY_REWRITE_PROMPT,
-    _ANIMA_SELF_CHECK,
 )
 from prompt_agent.tools import (
     get_tools,
-    REPLACE_PROMPT_TOOL,
     execute_search_tags,
     execute_get_related_tags,
     execute_get_artist_recommendations,
@@ -312,33 +310,6 @@ class PromptAgent:
             return await execute_get_anima_format()
         elif name == "get_newbie_format":
             return await execute_get_newbie_format()
-        elif name == "replace_prompt":
-            current = getattr(self, "_selfcheck_content", "")
-            old_list = args.get("old_strings", [])
-            new_list = args.get("new_strings", [])
-            if old_list:
-                modified = current
-                changes = []
-                for old, new in zip(old_list, new_list):
-                    if old in modified:
-                        modified = modified.replace(old, new)
-                        changes.append((old, new))
-                self._selfcheck_content = modified
-                change_lines = [f"「{o}」→「{n}」" for o, n in changes]
-                return json.dumps({
-                    "status": "ok", "modified": len(changes) > 0,
-                    "note": f"已完成 {len(changes)} 处替换",
-                    "changes": change_lines,
-                    "new_content": modified,
-                }, ensure_ascii=False)
-            else:
-                new_content = new_list[0] if new_list else ""
-                self._selfcheck_content = new_content
-                return json.dumps({
-                    "status": "ok", "modified": True,
-                    "note": "已完全重写提示词内容",
-                    "new_content": new_content,
-                }, ensure_ascii=False)
         else:
             return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
@@ -1027,83 +998,17 @@ class PromptAgent:
                 continue
 
             _log(f"LLM 输出最终回答 (finish_reason={finish_reason})")
-            content, total_tokens = await self._run_self_check(content, total_tokens, user_text)
             break
         else:
             _log_error(f"Agent 循环超过最大轮次 ({max_rounds})，强制输出")
             content, forced_tokens = await self._force_final_output(messages)
             total_tokens += forced_tokens
-            content, total_tokens = await self._run_self_check(content, total_tokens, user_text)
 
         if stagnated:
             content, forced_tokens = await self._force_final_output(messages)
             total_tokens += forced_tokens
-            content, total_tokens = await self._run_self_check(content, total_tokens, user_text)
 
         return content, rounds, total_tokens, captured_format
-
-    async def _run_self_check(self, content, total_tokens, user_text=""):
-        """Anima 模式自检：调用 LLM 检查最终提示词是否符合要求。"""
-        if self.mode != "Anima" or not content.strip():
-            return content, total_tokens
-
-        _log("进入自检阶段：LLM 检查提示词是否符合要求")
-        self._selfcheck_content = content
-        selfcheck_prompt = (
-            f"【最终自检】请对下方输出的提示词进行逐项检查。\n\n"
-            f"=== 用户要求 ===\n{user_text}\n\n"
-            f"=== 当前输出 ===\n{content}\n\n"
-            f"{_ANIMA_SELF_CHECK}\n\n"
-            f"如果发现不符合清单要求或用户要求的问题，请调用 replace_prompt 工具修正。\n"
-            f"- 要替换多处内容：提供 old_strings 和 new_strings 列表，两列表一一对应\n"
-            f"- 要完全重写：仅提供 new_strings（不提供 old_strings），new_strings[0] 作为全新内容\n"
-            f"如全部通过，回复「自检通过」即可。\n\n"
-            f"注意：仅可使用 replace_prompt 工具，不要调用其他工具。"
-        )
-        check_messages = [
-            {"role": "user", "content": selfcheck_prompt}
-        ]
-        check_tools = [REPLACE_PROMPT_TOOL]
-
-        try:
-            from LLM_Node import get_platform_settings
-            extra_body = get_platform_settings(self.api_url, self.model_name, True)
-
-            check_resp = await self.llm.chat.completions.create(
-                model=self.model_name, messages=check_messages,
-                tools=check_tools, tool_choice="auto",
-                temperature=0.3, max_tokens=10240,
-                extra_body=extra_body,
-            )
-            if check_resp.usage:
-                total_tokens += check_resp.usage.total_tokens
-                self._log_token_usage(check_resp.usage)
-
-            check_msg = check_resp.choices[0].message
-            if check_msg.tool_calls:
-                _log("自检触发了修改操作")
-                for tc in check_msg.tool_calls:
-                    if tc.function.name == "replace_prompt":
-                        raw_args = tc.function.arguments
-                        try:
-                            args = json.loads(raw_args) if raw_args else {}
-                        except json.JSONDecodeError:
-                            args = {}
-                        result_str = await self._execute_tool("replace_prompt", args)
-                        result = json.loads(result_str)
-                        content = result.get("new_content", content)
-                        changes = result.get("changes")
-                        if changes:
-                            for c in changes:
-                                _log_ok(f"  {c}")
-                        else:
-                            _log_ok(f"  完全重写提示词")
-            else:
-                _log("自检通过，无需修改")
-        except Exception as e:
-            _log_warn(f"自检阶段异常（不影响最终输出）: {e}")
-
-        return content, total_tokens
 
     def _parse_output(self, content):
         if self.mode == "Anima":
