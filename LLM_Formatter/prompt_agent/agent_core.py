@@ -314,29 +314,28 @@ class PromptAgent:
             return await execute_get_newbie_format()
         elif name == "replace_prompt":
             current = getattr(self, "_selfcheck_content", "")
-            old = args.get("old_string", "")
-            new = args.get("new_string", "")
-            if old:
-                if old in current:
-                    modified = current.replace(old, new)
-                    self._selfcheck_content = modified
-                    return json.dumps({
-                        "status": "ok", "modified": True,
-                        "note": f"已完成替换，共 {len(old)} 字符 → {len(new)} 字符",
-                        "new_content": modified,
-                    }, ensure_ascii=False)
-                else:
-                    return json.dumps({
-                        "status": "ok", "modified": False,
-                        "note": "未找到匹配的 old_string，请检查原文是否完全一致（包括空格和换行）",
-                        "new_content": current,
-                    }, ensure_ascii=False)
+            old_list = args.get("old_strings", [])
+            new_list = args.get("new_strings", [])
+            if old_list:
+                modified = current
+                replacements = 0
+                for old, new in zip(old_list, new_list):
+                    if old in modified:
+                        modified = modified.replace(old, new)
+                        replacements += 1
+                self._selfcheck_content = modified
+                return json.dumps({
+                    "status": "ok", "modified": replacements > 0,
+                    "note": f"已完成 {replacements} 处替换",
+                    "new_content": modified,
+                }, ensure_ascii=False)
             else:
-                self._selfcheck_content = new
+                new_content = new_list[0] if new_list else ""
+                self._selfcheck_content = new_content
                 return json.dumps({
                     "status": "ok", "modified": True,
                     "note": "已完全重写提示词内容",
-                    "new_content": new,
+                    "new_content": new_content,
                 }, ensure_ascii=False)
         else:
             return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
@@ -1055,8 +1054,8 @@ class PromptAgent:
             f"{_ANIMA_SELF_CHECK}\n\n"
             f"如果发现不符合清单要求的问题（如标签互斥、人数不一致、"
             f"细节标签超限、场景不合理等），请调用 replace_prompt 工具修正。\n"
-            f"- 要替换部分内容：提供 old_string 和 new_string\n"
-            f"- 要完全重写：仅提供 new_string（不提供 old_string）\n"
+            f"- 要替换多处内容：提供 old_strings 和 new_strings 列表，两列表一一对应\n"
+            f"- 要完全重写：仅提供 new_strings（不提供 old_strings），new_strings[0] 作为全新内容\n"
             f"如需多次修改，可分多次调用。如全部通过，回复「自检通过」即可。\n\n"
             f"注意：仅可使用 replace_prompt 工具，不要调用其他工具。"
         )

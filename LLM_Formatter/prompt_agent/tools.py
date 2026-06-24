@@ -107,20 +107,22 @@ REPLACE_PROMPT_TOOL = {
     "type": "function",
     "function": {
         "name": "replace_prompt",
-        "description": "在最终自检阶段，用于修改已生成的提示词内容。可进行精确字符串替换（提供 old_string 精确匹配要替换的文本），或完全重写（仅提供 new_string 作为全新内容）。",
+        "description": "在最终自检阶段，用于修改已生成的提示词内容。可进行多处精确字符串替换（提供 old_strings 和 new_strings 列表），或完全重写（不提供 old_strings，仅提供 new_strings 作为全新内容）。",
         "parameters": {
             "type": "object",
             "properties": {
-                "old_string": {
-                    "type": "string",
-                    "description": "要替换的旧文本，需精确匹配原文中的一段字符。不提供此参数则替换整个提示词内容。"
+                "old_strings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要替换的旧文本列表，每项需精确匹配原文中的一段字符。不提供此参数则替换整个提示词内容。"
                 },
-                "new_string": {
-                    "type": "string",
-                    "description": "替换后的新文本。若省略 old_string，则此参数作为全新的提示词内容。"
+                "new_strings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "替换后的新文本列表（与 old_strings 一一对应）。若不提供 old_strings，则 new_strings[0] 作为全新的提示词内容。"
                 },
             },
-            "required": ["new_string"],
+            "required": ["new_strings"],
         },
     },
 }
