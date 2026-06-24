@@ -11,9 +11,11 @@ from prompt_agent.agent_prompts import (
     get_format_tool_directive,
     LOW_ASSEMBLY_PROMPT,
     QUERY_REWRITE_PROMPT,
+    _ANIMA_SELF_CHECK,
 )
 from prompt_agent.tools import (
     get_tools,
+    REPLACE_PROMPT_TOOL,
     execute_search_tags,
     execute_get_related_tags,
     execute_get_artist_recommendations,
@@ -24,13 +26,6 @@ from prompt_agent.cache import (
     get_baseline_store, compute_edit, normalize as normalize_prompt,
 )
 from prompt_agent import utils
-
-try:
-    import comfy.utils
-    import comfy.model_management
-    _COMFY_AVAILABLE = True
-except ImportError:
-    _COMFY_AVAILABLE = False
 
 MAX_ROUNDS = 10
 
@@ -175,7 +170,7 @@ def _serialize_tool_calls(tool_calls):
 
 
 class PromptAgent:
-    def __init__(self, api_key, api_url, model_name, mode, thinking, config, effort="Medium", unique_id=None):
+    def __init__(self, api_key, api_url, model_name, mode, thinking, config, effort="Medium"):
         self.api_key = api_key
         self.api_url = api_url
         self.model_name = model_name
@@ -183,15 +178,45 @@ class PromptAgent:
         self.thinking = thinking
         self.config = config
         self.effort = effort
-        self.unique_id = unique_id
         self._effort_cfg = _EFFORT_CONFIG.get(effort, _EFFORT_CONFIG["Medium"])
         self.llm = AsyncOpenAI(api_key=api_key, base_url=api_url)
         from LLM_Node import get_platform_settings
         self._extra_body = get_platform_settings(self.api_url, self.model_name, False)
+        self.total_cached_input = 0
+        self.total_uncached_input = 0
+        self.total_output = 0
 
     def _log_token_usage(self, usage):
-        if usage:
-            _log(f"Token: {usage.prompt_tokens} input + {usage.completion_tokens} output = {usage.total_tokens} used")
+        if not usage:
+            return
+
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = usage.completion_tokens
+
+        cached_tokens = 0
+        if hasattr(usage, "prompt_tokens_details") and usage.prompt_tokens_details:
+            cached_tokens = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+
+        uncached_tokens = max(0, prompt_tokens - cached_tokens)
+
+        self.total_cached_input += cached_tokens
+        self.total_uncached_input += uncached_tokens
+        self.total_output += completion_tokens
+
+        _log(
+            f"本轮 Token 详情: "
+            f"输入 {prompt_tokens} (其中缓存命中 {cached_tokens}, 实际计算 {uncached_tokens}) "
+            f"+ 输出 {completion_tokens}"
+        )
+
+    def _log_financial_summary(self, rounds=0):
+        _log_banner(
+            f"Agent 完成 | 总轮次: {rounds + 1}\n"
+            f"  [账面统计] 累计物理交互 Token: {self.total_uncached_input + self.total_cached_input + self.total_output}\n"
+            f"  [真实消耗] 缓存命中输入: {self.total_cached_input}\n"
+            f"            实际计算输入: {self.total_uncached_input}\n"
+            f"            实际生成输出: {self.total_output}\n"
+        )
 
     async def _rewrite_query(self, question):
         _log_section("查询重写")
@@ -287,6 +312,32 @@ class PromptAgent:
             return await execute_get_anima_format()
         elif name == "get_newbie_format":
             return await execute_get_newbie_format()
+        elif name == "replace_prompt":
+            current = getattr(self, "_selfcheck_content", "")
+            old = args.get("old_string", "")
+            new = args.get("new_string", "")
+            if old:
+                if old in current:
+                    modified = current.replace(old, new)
+                    self._selfcheck_content = modified
+                    return json.dumps({
+                        "status": "ok", "modified": True,
+                        "note": f"已完成替换，共 {len(old)} 字符 → {len(new)} 字符",
+                        "new_content": modified,
+                    }, ensure_ascii=False)
+                else:
+                    return json.dumps({
+                        "status": "ok", "modified": False,
+                        "note": "未找到匹配的 old_string，请检查原文是否完全一致（包括空格和换行）",
+                        "new_content": current,
+                    }, ensure_ascii=False)
+            else:
+                self._selfcheck_content = new
+                return json.dumps({
+                    "status": "ok", "modified": True,
+                    "note": "已完全重写提示词内容",
+                    "new_content": new,
+                }, ensure_ascii=False)
         else:
             return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
 
@@ -539,14 +590,6 @@ class PromptAgent:
         _log_banner("Low effort 流水线模式已启用")
         _log(f"模式: {self.mode} | Effort: Low | MCP: HF (主) / MS (备)")
 
-        pbar = comfy.utils.ProgressBar(4, node_id=self.unique_id) if _COMFY_AVAILABLE else None
-
-        def _tick(step):
-            if _COMFY_AVAILABLE:
-                comfy.model_management.throw_exception_if_processing_interrupted()
-            if pbar:
-                pbar.update_absolute(step)
-
         user_tags, dimensions = await self._rewrite_query(user_text)
         if not dimensions:
             dimensions = [user_text]
@@ -555,27 +598,24 @@ class PromptAgent:
         user_tags = ", ".join(provided_list)
         if provided_list:
             _log(f"确定性抽取到用户已提供标签 {len(provided_list)} 个，将禁止检索")
-        _tick(1)
 
         all_tag_names, tag_cn_map = await self._batch_search_tags(dimensions)
         if not all_tag_names:
             _log_warn("所有维度均未搜索到标签，回退为普通模式")
             return await self._fallback_normal(user_text, image)
-        _tick(2)
 
         all_tag_names = await self._explore_related_tags(all_tag_names, user_text)
-        _tick(3)
 
         result = await self._assemble_low_output(all_tag_names, tag_cn_map, user_text, user_tags, image)
-        _tick(4)
+
         return result
 
     async def _force_final_output(self, messages):
-        if _COMFY_AVAILABLE:
-            comfy.model_management.throw_exception_if_processing_interrupted()
         messages.append({
             "role": "user",
-            "content": "请根据已收集到的标签信息直接输出最终 prompt，禁止再调用任何工具。",
+            "content": "请根据已收集到的标签信息直接输出最终 prompt。"
+                       "禁止输出任何 XML 工具调用标签（如 <tool_call>、<invoke> 等），"
+                       "只输出纯文本的最终 prompt。",
         })
         try:
             resp = await self.llm.chat.completions.create(
@@ -593,8 +633,9 @@ class PromptAgent:
         return content, forced_tokens
 
     async def run(self, user_text, image=None):
-        baseline = get_baseline_store().get(self.unique_id)
-        decision, edit = self._decide_baseline(baseline, user_text, image)
+        decision, edit, unique_id, baseline = self._decide_baseline(user_text, image)
+        user_text = user_text.replace("重写", "")
+
         if decision == "reuse":
             return self._parse_output(baseline["output"])
 
@@ -603,8 +644,9 @@ class PromptAgent:
                 xml_out, text_out, content = await self._run_low_continuation(user_text, baseline, edit)
             else:
                 xml_out, text_out, content = await self._run_low_effort(user_text, image)
-            self._store_baseline(user_text, content, image,
+            self._store_baseline(unique_id, user_text, content, image,
                                  baseline.get("format_spec") if baseline else None)
+            self._log_financial_summary()
             return xml_out, text_out
 
         _log_banner("Agent 模式已启用，开始处理用户输入...")
@@ -616,35 +658,51 @@ class PromptAgent:
         messages, max_rounds, provided_norm = build
 
         content, rounds, total_tokens, captured_spec = await self._run_agent_loop(
-            messages, max_rounds, provided_norm,
+            messages, max_rounds, provided_norm, user_text,
         )
 
         _log_section("输出解析")
         xml_out, text_out = self._parse_output(content)
 
         fmt_spec = captured_spec or (baseline.get("format_spec") if baseline else None)
-        self._store_baseline(user_text, content, image, fmt_spec)
+        self._store_baseline(unique_id, user_text, content, image, fmt_spec)
 
-        _log_banner(f"Agent 完成 | 总轮次: {rounds + 1} | 总 Token: {total_tokens}")
+        self._log_financial_summary(rounds)
         return xml_out, text_out
 
-    def _decide_baseline(self, baseline, user_text, image):
-        if not (baseline and image is None
-                and baseline.get("mode") == self.mode
-                and not baseline.get("has_image")
-                and baseline.get("output")):
-            return ("cold", None)
-        if normalize_prompt(user_text) == baseline.get("norm_input"):
-            _log_ok("输入与上次完全一致，直接复用上次结果（零调用）")
-            return ("reuse", None)
-        edit = compute_edit(baseline["raw_input"], user_text)
-        _log(f"与上次 diff：变更块={edit['blocks']}，相似度={edit['ratio']:.2f}")
-        if edit["blocks"] == 0:
-            _log_ok("仅标点/空白变化，无实义改动，直接复用上次结果（零调用）")
-            return ("reuse", None)
-        if edit["continue"]:
-            return ("continue", edit)
-        return ("cold", None)
+    def _decide_baseline(self, user_text, image):
+        best_ratio = -1
+        result = None
+        unique_id = "0"
+        for unique_id in get_baseline_store()._by_node:
+            baseline = get_baseline_store().get(unique_id)
+            if not (baseline and image is None
+                    and baseline.get("mode") == self.mode
+                    and not baseline.get("has_image")
+                    and baseline.get("output")):
+                continue
+            if normalize_prompt(user_text) == baseline.get("norm_input"):
+                best_ratio = 1.0
+                result = ("reuse", None, unique_id, baseline)
+                break
+            edit = compute_edit(baseline["raw_input"], user_text)
+            if edit["blocks"] == 0 or edit["continue"]:
+                if edit['ratio'] > best_ratio:
+                    best_ratio = edit['ratio']
+                    if edit["blocks"] == 0:
+                        result = ("reuse", None, unique_id, baseline)
+                    if edit["continue"]:
+                        result = ("continue", edit, unique_id, baseline)
+        
+        if result is None:
+            result = ("cold", None, str(int(unique_id) + 1), None)
+        elif "重写" in user_text:
+            get_baseline_store().delete(unique_id)
+            result = ("cold", None, unique_id, None)
+
+        decision_label = result[0]
+        _log(f"基线决策: {decision_label} (ratio={best_ratio:.3f}, unique_id={result[2]})")
+        return result
 
     def _collect_provided_tags(self, user_text, rewrite_user_tags):
         provided_list = utils.extract_provided_tags(user_text)
@@ -807,11 +865,11 @@ class PromptAgent:
         ]
         return messages, max_rounds, set()
 
-    def _store_baseline(self, user_text, content, image, format_spec=None):
+    def _store_baseline(self, unique_id, user_text, content, image, format_spec=None):
         if not content or not content.strip():
             return
         try:
-            get_baseline_store().put(self.unique_id, {
+            get_baseline_store().put(unique_id, {
                 "norm_input": normalize_prompt(user_text),
                 "raw_input": user_text,
                 "output": content,
@@ -822,9 +880,7 @@ class PromptAgent:
         except Exception:
             pass
 
-    async def _run_agent_loop(self, messages, max_rounds, provided_norm):
-        pbar = comfy.utils.ProgressBar(max_rounds, node_id=self.unique_id) if _COMFY_AVAILABLE else None
-
+    async def _run_agent_loop(self, messages, max_rounds, provided_norm, user_text=""):
         rounds = 0
         total_tokens = 0
         duplicate_tracker = {}
@@ -836,8 +892,6 @@ class PromptAgent:
         captured_format = None
 
         while rounds < max_rounds:
-            if _COMFY_AVAILABLE:
-                comfy.model_management.throw_exception_if_processing_interrupted()
             _log_round_header(rounds + 1)
             _tools = await get_tools()
             _log(f"LLM 请求: {len(_tools)} tools available, {len(messages)} messages")
@@ -960,8 +1014,6 @@ class PromptAgent:
                     stagnant_rounds = 0
 
                 rounds += 1
-                if pbar:
-                    pbar.update_absolute(rounds)
 
                 if stagnant_rounds >= _STAGNATION_LIMIT:
                     _log_warn("连续低信息增量，提前结束探索，进入收尾输出")
@@ -974,17 +1026,79 @@ class PromptAgent:
                 continue
 
             _log(f"LLM 输出最终回答 (finish_reason={finish_reason})")
+            content, total_tokens = await self._run_self_check(content, total_tokens, user_text)
             break
         else:
             _log_error(f"Agent 循环超过最大轮次 ({max_rounds})，强制输出")
             content, forced_tokens = await self._force_final_output(messages)
             total_tokens += forced_tokens
+            content, total_tokens = await self._run_self_check(content, total_tokens, user_text)
 
         if stagnated:
             content, forced_tokens = await self._force_final_output(messages)
             total_tokens += forced_tokens
+            content, total_tokens = await self._run_self_check(content, total_tokens, user_text)
 
         return content, rounds, total_tokens, captured_format
+
+    async def _run_self_check(self, content, total_tokens, user_text=""):
+        """Anima 模式自检：调用 LLM 检查最终提示词是否符合清单要求。"""
+        if self.mode != "Anima" or not content.strip():
+            return content, total_tokens
+
+        _log("进入自检阶段：LLM 检查提示词是否符合清单要求")
+        self._selfcheck_content = content
+        selfcheck_prompt = (
+            f"【最终自检】请对下方输出的提示词进行逐项检查。\n\n"
+            f"=== 用户要求 ===\n{user_text}\n\n"
+            f"=== 当前输出 ===\n{content}\n\n"
+            f"{_ANIMA_SELF_CHECK}\n\n"
+            f"如果发现不符合清单要求的问题（如标签互斥、人数不一致、"
+            f"细节标签超限、场景不合理等），请调用 replace_prompt 工具修正。\n"
+            f"- 要替换部分内容：提供 old_string 和 new_string\n"
+            f"- 要完全重写：仅提供 new_string（不提供 old_string）\n"
+            f"如需多次修改，可分多次调用。如全部通过，回复「自检通过」即可。\n\n"
+            f"注意：仅可使用 replace_prompt 工具，不要调用其他工具。"
+        )
+        check_messages = [
+            {"role": "user", "content": selfcheck_prompt}
+        ]
+        check_tools = [REPLACE_PROMPT_TOOL]
+
+        try:
+            from LLM_Node import get_platform_settings
+            extra_body = get_platform_settings(self.api_url, self.model_name, True)
+
+            check_resp = await self.llm.chat.completions.create(
+                model=self.model_name, messages=check_messages,
+                tools=check_tools, tool_choice="auto",
+                temperature=0.3, max_tokens=10240,
+                extra_body=extra_body,
+            )
+            if check_resp.usage:
+                total_tokens += check_resp.usage.total_tokens
+                self._log_token_usage(check_resp.usage)
+
+            check_msg = check_resp.choices[0].message
+            if check_msg.tool_calls:
+                _log("自检触发了修改操作")
+                for tc in check_msg.tool_calls:
+                    if tc.function.name == "replace_prompt":
+                        raw_args = tc.function.arguments
+                        try:
+                            args = json.loads(raw_args) if raw_args else {}
+                        except json.JSONDecodeError:
+                            args = {}
+                        result_str = await self._execute_tool("replace_prompt", args)
+                        result = json.loads(result_str)
+                        content = result.get("new_content", content)
+                        _log_ok(f"自检修改完成，新内容长度: {len(content)} 字符")
+            else:
+                _log("自检通过，无需修改")
+        except Exception as e:
+            _log_warn(f"自检阶段异常（不影响最终输出）: {e}")
+
+        return content, total_tokens
 
     def _parse_output(self, content):
         if self.mode == "Anima":

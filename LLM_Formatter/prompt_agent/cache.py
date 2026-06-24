@@ -15,6 +15,8 @@ prompt_agent/cache.py
 from __future__ import annotations
 
 import difflib
+import json
+import os
 import re
 import threading
 
@@ -137,11 +139,33 @@ class BaselineStore:
         output      上次最终输出全文（续写时作为 [assistant] 上文）
         mode        "NewBie" / "Anima"
         has_image   上次是否带图（回退判定）
+
+    数据持久化到磁盘，重启自动读取。
     """
 
-    def __init__(self):
+    def __init__(self, path=None):
         self._by_node: dict[str, dict] = {}
         self._lock = threading.Lock()
+        if path is None:
+            path = os.path.join(os.path.dirname(__file__), "baseline_store.json")
+        self._path = path
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(self._path):
+                with open(self._path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._by_node.update(data)
+        except Exception:
+            pass
+
+    def _save(self):
+        try:
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._by_node, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def get(self, node_id) -> dict | None:
         if node_id is None:
@@ -154,10 +178,23 @@ class BaselineStore:
             return
         with self._lock:
             self._by_node[str(node_id)] = baseline
+            self._save()
+
+    def delete(self, node_id) -> bool:
+        if node_id is None:
+            return False
+        with self._lock:
+            key = str(node_id)
+            if key in self._by_node:
+                del self._by_node[key]
+                self._save()
+                return True
+            return False
 
     def clear(self):
         with self._lock:
             self._by_node.clear()
+            self._save()
 
 
 _baseline_store: BaselineStore | None = None

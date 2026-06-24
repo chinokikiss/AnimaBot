@@ -293,7 +293,7 @@ class LLM_Prompt_Formatter:
 
     # ── 主方法 ─────────────────────────────────────────────────────────
 
-    async def process_text(self, api_key, api_url, model_name, mode, user_text, thinking, agent_effort, image=None, unique_id=None):
+    async def process_text(self, api_key, api_url, model_name, mode, user_text, thinking, agent_effort, image=None):
         config = load_api_config()
         final_key, final_url = self._resolve_credentials(config, api_key, api_url)
 
@@ -304,7 +304,6 @@ class LLM_Prompt_Formatter:
                 agent = PromptAgent(
                     api_key=final_key, api_url=final_url, model_name=model_name,
                     mode=mode, thinking=thinking, config=config, effort=agent_effort,
-                    unique_id=unique_id,
                 )
                 return await agent.run(user_text, image=image)
             except Exception as e:
