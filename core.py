@@ -17,6 +17,7 @@ TOKEN = ""
 
 echo_id = 0
 pending = {}
+active_users = set()
 config = load_api_config()
 
 async def extract_image_from_msg(msg_array, ws):
@@ -290,18 +291,64 @@ async def handle_event(ws, data: dict):
             log(f"[私聊] {user_id}: {raw_msg}")
             image_bytes = await extract_image_from_msg(msg_array, ws)
             if is_drawing_command:
-                await anima(ws, user_id, None, False, raw_msg, message_id, image=image_bytes, self_id=self_id)
+                if user_id in active_users:
+                    await call_api(ws, "send_private_msg", {
+                        "user_id": user_id,
+                        "message": [{"type": "text", "data": {"text": "当前有任务正在进行中，请耐心等待哦 (｡•́︿•̀｡)"}}]
+                    })
+                else:
+                    active_users.add(user_id)
+                    try:
+                        await anima(ws, user_id, None, False, raw_msg, message_id, image=image_bytes, self_id=self_id)
+                    finally:
+                        active_users.discard(user_id)
             if is_upscale_command and image_bytes:
-                await upscale(ws, user_id, None, False, message_id, image_bytes)
+                if user_id in active_users:
+                    await call_api(ws, "send_private_msg", {
+                        "user_id": user_id,
+                        "message": [{"type": "text", "data": {"text": "当前有任务正在进行中，请耐心等待哦 (｡•́︿•̀｡)"}}]
+                    })
+                else:
+                    active_users.add(user_id)
+                    try:
+                        await upscale(ws, user_id, None, False, message_id, image_bytes)
+                    finally:
+                        active_users.discard(user_id)
 
         elif msg_type == "group":
             group_id = data.get("group_id")
             log(f"[群聊] {group_id} | {user_id}: {raw_msg}")
             image_bytes = await extract_image_from_msg(msg_array, ws)
             if is_drawing_command:
-                await anima(ws, group_id, user_id, True, raw_msg, message_id, image=image_bytes, self_id=self_id)
+                if user_id in active_users:
+                    await call_api(ws, "send_group_msg", {
+                        "group_id": group_id,
+                        "message": [
+                            {"type": "at", "data": {"qq": str(user_id)}},
+                            {"type": "text", "data": {"text": " 当前有任务正在进行中，请耐心等待哦 (｡•́︿•̀｡)"}}
+                        ]
+                    })
+                else:
+                    active_users.add(user_id)
+                    try:
+                        await anima(ws, group_id, user_id, True, raw_msg, message_id, image=image_bytes, self_id=self_id)
+                    finally:
+                        active_users.discard(user_id)
             if is_upscale_command and image_bytes:
-                await upscale(ws, group_id, user_id, True, message_id, image_bytes)
+                if user_id in active_users:
+                    await call_api(ws, "send_group_msg", {
+                        "group_id": group_id,
+                        "message": [
+                            {"type": "at", "data": {"qq": str(user_id)}},
+                            {"type": "text", "data": {"text": " 当前有任务正在进行中，请耐心等待哦 (｡•́︿•̀｡)"}}
+                        ]
+                    })
+                else:
+                    active_users.add(user_id)
+                    try:
+                        await upscale(ws, group_id, user_id, True, message_id, image_bytes)
+                    finally:
+                        active_users.discard(user_id)
 
     elif post_type == "notice":
         log(f"[通知] {json.dumps(data, ensure_ascii=False)}")
