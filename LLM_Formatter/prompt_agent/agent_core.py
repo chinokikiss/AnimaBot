@@ -195,7 +195,7 @@ def _usage_summary(usage):
 
 
 class PromptAgent:
-    def __init__(self, api_key, api_url, model_name, mode, thinking, config, effort="Medium", unique_id=None):
+    def __init__(self, api_key, api_url, model_name, mode, thinking, config, effort="Medium"):
         self.api_key = api_key
         self.api_url = api_url
         self.model_name = model_name
@@ -203,7 +203,6 @@ class PromptAgent:
         self.thinking = thinking
         self.config = config
         self.effort = effort
-        self.unique_id = unique_id
         self._effort_cfg = _EFFORT_CONFIG.get(effort, _EFFORT_CONFIG["Medium"])
         self.llm = AsyncOpenAI(api_key=api_key, base_url=api_url)
         from LLM_Node import get_platform_settings
@@ -643,13 +642,10 @@ class PromptAgent:
     async def run(self, user_text, image=None, force_full_run=False):
         user_text = user_text.replace("重写", "")
 
-        # ── 基线判定（所有 effort 通用）：复用 / 续写 / 冷跑 ──
-        baseline = get_baseline_store().get(self.unique_id)
+        decision, edit, unique_id, baseline = self._decide_baseline(user_text, image)
         if force_full_run:
             _log("Force full Agent run enabled: ignoring incremental baseline for this run.")
-            decision, edit = ("cold", None)
-        else:
-            decision, edit = self._decide_baseline(baseline, user_text, image)
+            decision, edit, unique_id, baseline = ("cold", None, str(int(unique_id or 0) + 1), None)
 
         if decision == "reuse":
             return self._parse_output(baseline["output"])
@@ -659,7 +655,7 @@ class PromptAgent:
                 xml_out, text_out, content = await self._run_low_continuation(user_text, baseline, edit)
             else:
                 xml_out, text_out, content = await self._run_low_effort(user_text, image)
-            self._store_baseline(self.unique_id, user_text, content, image,
+            self._store_baseline(unique_id, user_text, content, image,
                                  baseline.get("format_spec") if baseline else None)
             self._log_financial_summary()
             return xml_out, text_out
@@ -680,24 +676,44 @@ class PromptAgent:
         xml_out, text_out = self._parse_output(content)
 
         fmt_spec = captured_spec or (baseline.get("format_spec") if baseline else None)
-        self._store_baseline(self.unique_id, user_text, content, image, fmt_spec)
+        self._store_baseline(unique_id, user_text, content, image, fmt_spec)
 
         self._log_financial_summary(rounds)
         return xml_out, text_out
 
-    def _decide_baseline(self, baseline, user_text, image):
-        if not (baseline and image is None
-                and baseline.get("mode") == self.mode
-                and not baseline.get("has_image")
-                and baseline.get("output")):
-            return ("cold", None)
-        ref_text = user_text.replace("重写", "")
-        if normalize_prompt(ref_text) == baseline.get("norm_input"):
-            return ("reuse", None)
-        edit = compute_edit(baseline["raw_input"], ref_text)
-        if edit["continue"]:
-            return ("continue", edit)
-        return ("cold", None)
+    def _decide_baseline(self, user_text, image):
+        best_ratio = -1
+        result = None
+        unique_id = "0"
+        for unique_id in get_baseline_store()._by_node:
+            baseline = get_baseline_store().get(unique_id)
+            if not (baseline and image is None
+                    and baseline.get("mode") == self.mode
+                    and not baseline.get("has_image")
+                    and baseline.get("output")):
+                continue
+            if normalize_prompt(user_text) == baseline.get("norm_input"):
+                best_ratio = 1.0
+                result = ("reuse", None, unique_id, baseline)
+                break
+            edit = compute_edit(baseline["raw_input"], user_text)
+            if edit["blocks"] == 0 or edit["continue"]:
+                if edit['ratio'] > best_ratio:
+                    best_ratio = edit['ratio']
+                    if edit["blocks"] == 0:
+                        result = ("reuse", None, unique_id, baseline)
+                    if edit["continue"]:
+                        result = ("continue", edit, unique_id, baseline)
+
+        if result is None:
+            result = ("cold", None, str(int(unique_id) + 1), None)
+        elif "重写" in user_text:
+            get_baseline_store().delete(unique_id)
+            result = ("cold", None, unique_id, None)
+
+        decision_label = result[0]
+        _log(f"基线决策: {decision_label} (ratio={best_ratio:.3f}, unique_id={result[2]})")
+        return result
 
     def _collect_provided_tags(self, user_text, rewrite_user_tags):
         provided_list = utils.extract_provided_tags(user_text)
