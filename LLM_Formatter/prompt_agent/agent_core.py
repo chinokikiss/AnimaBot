@@ -167,8 +167,35 @@ def _serialize_tool_calls(tool_calls):
     return result
 
 
+def _message_text_from_content_or_reasoning(message):
+    """Return visible content, falling back to provider reasoning fields.
+
+    Some OpenAI-compatible gateways return HTTP 200 with empty ``content`` while
+    placing the short final payload in ``reasoning``/``reasoning_content``.
+    Query rewrite expects machine-readable JSON, so it is safe to try these
+    provider fields before treating the response as empty.
+    """
+    content = getattr(message, "content", None)
+    if content and str(content).strip():
+        return str(content), "content"
+    for attr in ("reasoning", "reasoning_content"):
+        value = getattr(message, attr, None)
+        if value and str(value).strip():
+            return str(value), attr
+    return "", "empty"
+
+
+def _usage_summary(usage):
+    if not usage:
+        return "usage=n/a"
+    prompt_tokens = getattr(usage, "prompt_tokens", "?")
+    completion_tokens = getattr(usage, "completion_tokens", "?")
+    total_tokens = getattr(usage, "total_tokens", "?")
+    return f"usage={prompt_tokens}+{completion_tokens}={total_tokens}"
+
+
 class PromptAgent:
-    def __init__(self, api_key, api_url, model_name, mode, thinking, config, effort="Medium"):
+    def __init__(self, api_key, api_url, model_name, mode, thinking, config, effort="Medium", unique_id=None):
         self.api_key = api_key
         self.api_url = api_url
         self.model_name = model_name
@@ -176,6 +203,7 @@ class PromptAgent:
         self.thinking = thinking
         self.config = config
         self.effort = effort
+        self.unique_id = unique_id
         self._effort_cfg = _EFFORT_CONFIG.get(effort, _EFFORT_CONFIG["Medium"])
         self.llm = AsyncOpenAI(api_key=api_key, base_url=api_url)
         from LLM_Node import get_platform_settings
@@ -231,11 +259,19 @@ class PromptAgent:
                     model=self.model_name,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3,
-                    max_tokens=2048,
+                    max_tokens=10240,
                     extra_body=extra_body,
                 )
-                raw = resp.choices[0].message.content
+                choice = resp.choices[0]
+                raw, source = _message_text_from_content_or_reasoning(choice.message)
+                if source != "content" and source != "empty":
+                    _log(f"查询重写使用 {source} 字段解析响应")
                 if not raw or not raw.strip():
+                    finish_reason = getattr(choice, "finish_reason", "unknown")
+                    _log_warn(
+                        f"查询重写空响应详情: finish_reason={finish_reason}, "
+                        f"{_usage_summary(getattr(resp, 'usage', None))}"
+                    )
                     if attempt == 0 and len(extra_body_list) > 1:
                         _log_warn("查询重写返回空响应，去掉 reasoning 参数重试...")
                         continue
@@ -604,9 +640,16 @@ class PromptAgent:
             raise
         return content, forced_tokens
 
-    async def run(self, user_text, image=None):
-        decision, edit, unique_id, baseline = self._decide_baseline(user_text, image)
+    async def run(self, user_text, image=None, force_full_run=False):
         user_text = user_text.replace("重写", "")
+
+        # ── 基线判定（所有 effort 通用）：复用 / 续写 / 冷跑 ──
+        baseline = get_baseline_store().get(self.unique_id)
+        if force_full_run:
+            _log("Force full Agent run enabled: ignoring incremental baseline for this run.")
+            decision, edit = ("cold", None)
+        else:
+            decision, edit = self._decide_baseline(baseline, user_text, image)
 
         if decision == "reuse":
             return self._parse_output(baseline["output"])
@@ -616,7 +659,7 @@ class PromptAgent:
                 xml_out, text_out, content = await self._run_low_continuation(user_text, baseline, edit)
             else:
                 xml_out, text_out, content = await self._run_low_effort(user_text, image)
-            self._store_baseline(unique_id, user_text, content, image,
+            self._store_baseline(self.unique_id, user_text, content, image,
                                  baseline.get("format_spec") if baseline else None)
             self._log_financial_summary()
             return xml_out, text_out
@@ -624,7 +667,7 @@ class PromptAgent:
         _log_banner("Agent 模式已启用，开始处理用户输入...")
         _log(f"模式: {self.mode} | Effort: {self.effort} | MCP: HF (主) / MS (备)")
         if decision == "continue":
-            build = self._build_continuation(baseline, edit)
+            build = self._build_continuation(baseline, edit, user_text)
         else:
             build = await self._build_cold_run(user_text, image)
         messages, max_rounds, provided_norm = build
@@ -637,44 +680,24 @@ class PromptAgent:
         xml_out, text_out = self._parse_output(content)
 
         fmt_spec = captured_spec or (baseline.get("format_spec") if baseline else None)
-        self._store_baseline(unique_id, user_text, content, image, fmt_spec)
+        self._store_baseline(self.unique_id, user_text, content, image, fmt_spec)
 
         self._log_financial_summary(rounds)
         return xml_out, text_out
 
-    def _decide_baseline(self, user_text, image):
-        best_ratio = -1
-        result = None
-        unique_id = "0"
-        for unique_id in get_baseline_store()._by_node:
-            baseline = get_baseline_store().get(unique_id)
-            if not (baseline and image is None
-                    and baseline.get("mode") == self.mode
-                    and not baseline.get("has_image")
-                    and baseline.get("output")):
-                continue
-            if normalize_prompt(user_text) == baseline.get("norm_input"):
-                best_ratio = 1.0
-                result = ("reuse", None, unique_id, baseline)
-                break
-            edit = compute_edit(baseline["raw_input"], user_text)
-            if edit["blocks"] == 0 or edit["continue"]:
-                if edit['ratio'] > best_ratio:
-                    best_ratio = edit['ratio']
-                    if edit["blocks"] == 0:
-                        result = ("reuse", None, unique_id, baseline)
-                    if edit["continue"]:
-                        result = ("continue", edit, unique_id, baseline)
-        
-        if result is None:
-            result = ("cold", None, str(int(unique_id) + 1), None)
-        elif "重写" in user_text:
-            get_baseline_store().delete(unique_id)
-            result = ("cold", None, unique_id, None)
-
-        decision_label = result[0]
-        _log(f"基线决策: {decision_label} (ratio={best_ratio:.3f}, unique_id={result[2]})")
-        return result
+    def _decide_baseline(self, baseline, user_text, image):
+        if not (baseline and image is None
+                and baseline.get("mode") == self.mode
+                and not baseline.get("has_image")
+                and baseline.get("output")):
+            return ("cold", None)
+        ref_text = user_text.replace("重写", "")
+        if normalize_prompt(ref_text) == baseline.get("norm_input"):
+            return ("reuse", None)
+        edit = compute_edit(baseline["raw_input"], ref_text)
+        if edit["continue"]:
+            return ("continue", edit)
+        return ("cold", None)
 
     def _collect_provided_tags(self, user_text, rewrite_user_tags):
         provided_list = utils.extract_provided_tags(user_text)
@@ -708,11 +731,16 @@ class PromptAgent:
             fmt_hint = "必须保留 `## Prompt` 和 `## 中文解释` 两个标题；`## 中文解释` 写完整设计说明。"
         else:
             fmt_hint = "保留同样的 `<img>` XML 代码块及其后的中文翻译。"
-        revise_directive = "用户在上一轮提示词的基础上做了如下修改：\n" + edit["instruction"]
+        revise_directive = (
+            "用户在上一轮提示词（见上文 user 消息）的基础上做了修改。"
+            "修改后的完整提示词如下：\n"
+            "<user_message>\n" + user_text + "\n</user_message>"
+        )
         if candidate_tags:
             revise_directive += "\n\n为本次改动检索到的候选标签（按需选用）：\n" + ", ".join(candidate_tags)
         revise_directive += (
-            "\n\n请在上一轮输出的基础上进行**最小化修订**：只改动与本次修改直接相关的标签，"
+            "\n\n请对比修改前后的两段提示词，在上一轮输出的基础上进行**最小化修订**："
+            "只改动与变化直接相关的标签，"
             "其余标签与上一轮输出逐字保持一致。直接输出修订后的完整结果。"
             + fmt_hint
             + "禁止新增任何额外标题或说明段（如「改动说明」），禁止输出关于你做了哪些改动的解释。"
@@ -799,9 +827,14 @@ class PromptAgent:
 
         return messages, max_rounds, provided_norm
 
-    def _build_continuation(self, baseline, edit):
+    def _build_continuation(self, baseline, edit, user_text):
+        """增量修订续写：把上次(提示词→输出)作为对话上文，再给出本轮修改后的
+        完整提示词，让模型自行对比两段文本、做最小化修订（before/after，
+        不再注入 difflib 的祈使指令——后者在无标点连写/重排/同义整改时易过抓或自相矛盾）。
+        Returns (messages, max_rounds, provided_norm)。
+        """
         _log_banner("增量修订模式：在上一轮结果基础上续写")
-        _log(f"改动：{edit['instruction']}")
+        # _log(f"改动(仅日志，不喂模型)：{edit['instruction']}")
         max_rounds = _REVISION_MAX_ROUNDS
         system_content, _, _ = get_agent_system_prompt(
             self.mode, self.config, max_rounds=max_rounds,
@@ -819,10 +852,12 @@ class PromptAgent:
         else:
             fmt_hint = "保留同样的 `<img>` XML 代码块及其后的中文翻译。"
         revise_directive = (
-            "用户在上一轮提示词的基础上做了如下修改：\n"
-            + edit["instruction"]
-            + "\n\n请在上一轮输出的基础上进行**最小化修订**："
-            "只改动与本次修改直接相关的标签，其余标签与上一轮输出逐字保持一致。"
+            "用户在上一轮提示词（见上文 user 消息）的基础上做了修改。"
+            "修改后的完整提示词如下：\n"
+            "<user_message>\n" + user_text + "\n</user_message>\n\n"
+            "请对比修改前后的两段提示词，找出发生变化的部分，"
+            "在上一轮输出的基础上进行**最小化修订**："
+            "只改动与变化直接相关的标签，其余标签与上一轮输出逐字保持一致。"
             "新出现的维度可调用工具检索；未改动、已确定的维度禁止改动、禁止重新检索。\n\n"
             "**输出要求（严格）**：直接输出修订后的**完整结果**，结构与标题必须与上一轮输出逐字一致。"
             + fmt_hint
@@ -890,6 +925,8 @@ class PromptAgent:
                 self._log_token_usage(resp.usage)
 
             if finish_reason == "tool_calls" and tool_calls:
+                if content and content.strip():
+                    _log(f"LLM 工具调用附带 content: {content[:200]}{'...' if len(content) > 200 else ''}", _C.WARNING)
                 parsed = []
                 skipped = []
                 for tc in tool_calls:
