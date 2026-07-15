@@ -84,10 +84,10 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     workflow = load_workflow(
         path=Path("workflows") / "image_anima_base_v1.json",
         overrides={
-            "77": {"text": tags_prompt},
-            "86": {"text": natural_prompt},
-            "74": {"width": width, "height": height},
-            "76": {"seed": random.randint(0, 2**32 - 1)},
+            "8": {"text": tags_prompt},
+            "26": {"text": natural_prompt},
+            "7": {"width": width, "height": height},
+            "10": {"seed": random.randint(0, 2**32 - 1)},
         }
     )
     imgs = await run_workflow(workflow)
