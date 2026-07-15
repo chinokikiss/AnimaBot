@@ -1,12 +1,12 @@
 {
   "cheap": {
-    "api_key": "sk-54c7f5d948c74224bd567a29d033b809",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-flash"
+    "api_key": "",
+    "base_url": "",
+    "model": ""
   },
   "quality": {
-    "api_key": "sk-54c7f5d948c74224bd567a29d033b809",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-flash"
+    "api_key": "",
+    "base_url": "",
+    "model": ""
   }
 }
