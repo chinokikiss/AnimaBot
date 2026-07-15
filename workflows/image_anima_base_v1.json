@@ -1,7 +1,7 @@
 {
-  "71": {
+  "2": {
     "inputs": {
-      "clip_name": "qwen_3_06b_base.safetensors",
+      "clip_name": "miaomiaoHarem_anima14_txt.safetensors",
       "type": "stable_diffusion",
       "device": "default"
     },
@@ -10,7 +10,7 @@
       "title": "加载CLIP"
     }
   },
-  "72": {
+  "3": {
     "inputs": {
       "vae_name": "qwen_image_vae.safetensors"
     },
@@ -19,25 +19,9 @@
       "title": "加载VAE"
     }
   },
-  "73": {
+  "7": {
     "inputs": {
-      "samples": [
-        "76",
-        0
-      ],
-      "vae": [
-        "72",
-        0
-      ]
-    },
-    "class_type": "VAEDecode",
-    "_meta": {
-      "title": "VAE解码"
-    }
-  },
-  "74": {
-    "inputs": {
-      "width": 1024,
+      "width": 920,
       "height": 1536,
       "batch_size": 1
     },
@@ -46,41 +30,54 @@
       "title": "空Latent图像"
     }
   },
-  "75": {
+  "8": {
     "inputs": {
-      "text": "worst quality, low quality, score_1, score_2, score_3, artist name",
+      "text": "masterpiece, best quality, very aesthetic, score_7, explicit, newest, year 2025, 1girl, loli, klee_\\(genshin_impact\\), genshin_impact, looking at viewer, single_bare_shoulder, red_skirt, thighs, stomach, grey_background, drooling, open mouth, spread legs, @nyxerebos",
       "clip": [
-        "71",
+        "2",
         0
       ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Negative Prompt)"
+      "title": "正面文本编码1"
     }
   },
-  "76": {
+  "9": {
     "inputs": {
-      "seed": 44662701082104,
-      "steps": 10,
-      "cfg": 1,
+      "text": "worst quality, low quality, score_1, score_2, score_3, artist name",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "负面文本编码"
+    }
+  },
+  "10": {
+    "inputs": {
+      "seed": 568395182075432,
+      "steps": 30,
+      "cfg": 5,
       "sampler_name": "euler",
-      "scheduler": "simple",
+      "scheduler": "normal",
       "denoise": 1,
       "model": [
-        "83",
+        "17",
         0
       ],
       "positive": [
-        "87",
+        "27",
         0
       ],
       "negative": [
-        "75",
+        "9",
         0
       ],
       "latent_image": [
-        "74",
+        "7",
         0
       ]
     },
@@ -89,22 +86,25 @@
       "title": "K采样器"
     }
   },
-  "77": {
+  "11": {
     "inputs": {
-      "text": "masterpiece, best quality, very aesthetic, score_7, sensitive,\n2girls, loli, flat chest, completely nude, barefoot, long hair, no genitals, covering body, convenient arm,\nsunna_(zenless_zone_zero), aqua hair, aqua streaks, twintails, blue eyes,\nnangong_yu, black hair, red eyes,\nmutual hug, cuddling, closed eyes, yuri, spread legs, arched back, ahegao, interlocked_fingers, holding_hands,\n(full body:3), simple background, monochrome background, soft focus, light particles, muted colors, pastels,\n@theflatfacadeds\n\nsensual entwined bodies, erotic skin contact, trembling with pleasure, dreamy lustful atmosphere, floating light motes",
-      "clip": [
-        "71",
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
         0
       ]
     },
-    "class_type": "CLIPTextEncode",
+    "class_type": "VAEDecode",
     "_meta": {
-      "title": "画风与角色"
+      "title": "VAE解码"
     }
   },
-  "78": {
+  "17": {
     "inputs": {
-      "unet_name": "anima-base-v1.0.safetensors",
+      "unet_name": "miaomiaoHarem_anima12.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -112,72 +112,45 @@
       "title": "UNet加载器"
     }
   },
-  "81": {
+  "26": {
     "inputs": {
-      "shift": 3,
-      "model": [
-        "78",
-        0
-      ]
-    },
-    "class_type": "ModelSamplingAuraFlow",
-    "_meta": {
-      "title": "采样算法（AuraFlow）"
-    }
-  },
-  "83": {
-    "inputs": {
-      "lora_name": "anima-turbo-lora-v0.2.safetensors",
-      "strength_model": 1,
-      "model": [
-        "81",
-        0
-      ]
-    },
-    "class_type": "LoraLoaderModelOnly",
-    "_meta": {
-      "title": "LoRA加载器（仅模型）"
-    }
-  },
-  "84": {
-    "inputs": {
-      "images": [
-        "73",
-        0
-      ]
-    },
-    "class_type": "ImageDataOutput",
-    "_meta": {
-      "title": "ImageDataOutput"
-    }
-  },
-  "86": {
-    "inputs": {
-      "text": "The composition is a wide full-body shot of two petite nude girls entangled in an erotic embrace against a plain pastel backdrop, their legs spread and backs subtly arched in pleasure while arms and limbs strategically conceal intimate areas. Soft diffused lighting wraps around their delicate silhouettes, with tiny glowing particles drifting gently in the air. The overall palette is muted pastel with a dreamy soft-focus finish, balancing erotic tension with ethereal beauty.",
+      "text": "The composition is a medium shot focusing on Klee's upper body and thighs, highlighting her bare shoulder and exposed abdomen. She masturbates with one hand, her mouth open and drooling, staring directly at the viewer with a mixture of pleasure and vulnerability. The plain gray background creates a studio-like isolation, with soft rim lighting defining her silhouette and the glossy texture of her lips.",
       "clip": [
-        "71",
+        "2",
         0
       ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "动作与场景"
+      "title": "正面文本编码2"
     }
   },
-  "87": {
+  "27": {
     "inputs": {
       "conditioning_to": [
-        "77",
+        "8",
         0
       ],
       "conditioning_from": [
-        "86",
+        "26",
         0
       ]
     },
     "class_type": "ConditioningConcat",
     "_meta": {
       "title": "条件连接"
+    }
+  },
+  "29": {
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "ImageDataOutput",
+    "_meta": {
+      "title": "ImageDataOutput"
     }
   }
 }

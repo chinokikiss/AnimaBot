@@ -2,3 +2,5 @@ openai
 lxml
 httpx
 websockets
+pandas
+numpy

@@ -6,11 +6,11 @@ import random
 import time
 from pathlib import Path
 import httpx
-from LLM_Formatter.LLM_Extractor import extract_prompt_params
-from LLM_Formatter.LLM_Node import LLM_Prompt_Formatter, load_api_config
 from comfyui_api import load_workflow, run_workflow
 from utils import check_nsfw, log, delete_images
 from websockets.asyncio.client import connect
+
+from AutoPrompt.agent_core import agent, extract_prompt_params
 
 WS_URL = "ws://localhost:3001"
 TOKEN = ""
@@ -18,7 +18,6 @@ TOKEN = ""
 echo_id = 0
 pending = {}
 active_users = set()
-config = load_api_config()
 
 async def extract_image_from_msg(msg_array, ws):
     for seg in msg_array:
@@ -65,21 +64,9 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     })
     msg_id = resp.get("data", {}).get("message_id")
 
-    prompt, width, height, use_agent = await extract_prompt_params(user_text)
+    prompt, width, height = await extract_prompt_params(user_text)
 
-    if use_agent:
-        # ── LLM_Prompt_Formatter: 生成Prompt ──
-        llm_prompt_formatter = LLM_Prompt_Formatter()
-        prompt, response = await llm_prompt_formatter.process_text(
-            api_key=config.get("api_key"),
-            api_url=config.get("api_url"),
-            model_name=config.get("model_name"),
-            mode="Anima",
-            user_text=prompt,
-            thinking=config.get("thinking"),
-            agent_effort=config.get("agent_effort"),
-            image=image
-        )
+    tags_prompt, natural_prompt, chinese_content = await agent(prompt)
 
     t1 = time.time()
 
@@ -97,8 +84,8 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     workflow = load_workflow(
         path=Path("workflows") / "image_anima_base_v1.json",
         overrides={
-            "77": {"text": prompt[0]},
-            "86": {"text": prompt[1]},
+            "77": {"text": tags_prompt},
+            "86": {"text": natural_prompt},
             "74": {"width": width, "height": height},
             "76": {"seed": random.randint(0, 2**32 - 1)},
         }
@@ -135,6 +122,8 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
         await call_api(ws, action, {
             param1: id1,
             "message": [
+                {"type": "reply", "data": {"id": str(user_msg_id)}},
+                {"type": "at", "data": {"qq": str(user_id)}},
                 {"type": "text", "data": {"text": "这张图片太害羞了，已经悄悄私发给你了哦 (⁄ ⁄•⁄ω⁄•⁄ ⁄)"}}
             ]
         })
@@ -159,7 +148,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                     "name": "Anima",
                     "uin": str(self_id),
                     "content": [
-                        {"type": "text", "data": {"text": f"Tag Prompt: {prompt[0]}"}}
+                        {"type": "text", "data": {"text": f"标签提示词: {tags_prompt}"}}
                     ]
                 }
             },
@@ -169,7 +158,17 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                     "name": "Anima",
                     "uin": str(self_id),
                     "content": [
-                        {"type": "text", "data": {"text": f"Natural Language Prompt: {prompt[1]}"}}
+                        {"type": "text", "data": {"text": f"自然语言提示词: {natural_prompt}"}}
+                    ]
+                }
+            },
+            {
+                "type": "node",
+                "data": {
+                    "name": "Anima",
+                    "uin": str(self_id),
+                    "content": [
+                        {"type": "text", "data": {"text": f"中文解释: {chinese_content}"}}
                     ]
                 }
             },
@@ -182,12 +181,12 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                         {
                             "type": "text", 
                             "data": {
-                                "text": f"Size: {size_str}\npt: {pt:.2f}s | it: {it:.2f}s | tt: {tt:.2f}s"
+                                "text": f"Size: {size_str}\n提示词耗时: {pt:.2f}s | 绘制耗时: {it:.2f}s | 总耗时: {tt:.2f}s"
                             }
                         }
                     ]
                 }
-            }
+            },
         ]
         if is_group:
             if is_nsfw:
