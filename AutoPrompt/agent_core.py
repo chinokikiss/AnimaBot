@@ -8,10 +8,10 @@ import re
 from openai import AsyncOpenAI
 from typing import List, Dict, Any
 
-from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _JAILBREAKER, _ANIMA_ASSEMBLY_DIRECTIVE, _LABEL_SYSTEM_PROMPT, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
+from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
                            _CHOOSE_ARTIST_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
 from .tools import execute_search_tags, execute_get_related_tags, execute_get_artist_recommendations
-from .utils import sample_tags
+from .utils import sample_tags, replace_underscores
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -37,11 +37,11 @@ client_quality = AsyncOpenAI(
 )
 
 
-BATCH_SIZE = 4
+BATCH_SIZE = 5
 SEARCH_RESULT_LIMIT = 40
 RELATED_TAGS_LIMIT = 50
-CHARACTER_RELATED_TAGS_LIMIT = 30
-SAMPLE_TOP_K = 100
+WEIGHTED_K = 100
+RANDOM_K = 25
 SAMPLE_MAX_THRESHOLD = 1000000
 ARTIST_RECOMMEND_LIMIT = 30
 
@@ -51,11 +51,19 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
         model=cfg["cheap"]["model"],
         messages=[
             {"role": "system", "content": _CLASSIFICATION_SYSTEM_PROMPT},
-            {"role": "user", "content": f"请对以下 tags 进行分类和合并：{zh_tags}\n\n请以 JSON 格式输出，格式为：{{\"results\": [{{\"query\": \"...\", \"category\": \"...\"}}]}}"}
+            {
+                "role": "user", 
+                "content": (
+                    f"原始用户描述（上下文参考）：{user_description}\n"
+                    f"待分类的中文 tags：{zh_tags}\n\n"
+                    f"请结合原始描述的语义上下文，对上述 tags 进行合理的分类、版权关联与合并。"
+                    f"请以 JSON 格式输出，格式为：{{\"results\": [{{\"query\": \"...\", \"category\": \"...\"}}]}}"
+                )
+            }
         ],
         response_format={"type": "json_object"},
         extra_body={"thinking": {"type": "disabled"}},
-        temperature=0.1,
+        temperature=0.0,
     )
     
     parsed_response = json.loads(resp.choices[0].message.content)
@@ -95,16 +103,14 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
     raw_search_results = [{"search_tags": q["query"], "results": json.loads(result)['results'][:SEARCH_RESULT_LIMIT]} for q, result in zip(search_queries, search_results_raw)]
 
     character_candidates: List[Dict[str, Any]] = []
-    for query_item, raw_res in zip(search_queries, raw_search_results):
+    for query_item, parsed_res in zip(search_queries, raw_search_results):
         if query_item["category"] == "character":
-            raw_res = raw_res["results"]
-            parsed_res = json.loads(raw_res) if isinstance(raw_res, str) else raw_res
             if parsed_res and "results" in parsed_res:
-                character_candidates.extend(parsed_res["results"])
+                character_candidates.append({"query":query_item["query"], "candidates":parsed_res["results"]})
 
     if not character_candidates:
         # logger.info("搜索结果:\n%s", json.dumps(raw_search_results, indent=2, ensure_ascii=False))
-        return raw_search_results
+        return raw_search_results, []
 
     selection_resp = await client_cheap.chat.completions.create(
         model=cfg["cheap"]["model"],
@@ -114,44 +120,46 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
                 "role": "user", 
                 "content": (
                     f"【用户的原始描述】：\n{user_description}\n\n"
-                    f"【候选角色列表】：\n{json.dumps(character_candidates, ensure_ascii=False, indent=2)}"
+                    f"【候选角色列表】：\n{character_candidates}"
                 )
             }
         ],
         response_format={"type": "json_object"},
         extra_body={"thinking": {"type": "disabled"}},
-        temperature=0.1,
+        temperature=0.0,
     )
 
     parsed_selection = json.loads(selection_resp.choices[0].message.content)
     selected_tags: List[str] = parsed_selection.get("selected_tags", [])
     selected_characters = []
     for character_candidate in character_candidates:
-        if character_candidate["tag"] in selected_tags:
-            selected_characters.append(character_candidate["cn_name"])
+        for candidate in character_candidate["candidates"]:
+            if candidate["tag"] in selected_tags:
+                selected_characters.append(candidate["cn_name"])
     logger.info("消歧后选中的角色: %s", selected_characters)
 
     resolved_character_results: List[str] = []
-    
+
     if selected_tags:
-        tasks = [
-            execute_get_related_tags(
-                tags=[selected_tag],
-                limit=RELATED_TAGS_LIMIT
-            )
-            for selected_tag in selected_tags
-        ]
-        results = []
-        for result in await asyncio.gather(*tasks):
-            result = json.loads(result)["results"]
-            new_result = []
-            for entry in result:
-                if '(' not in entry["tag"] and ')' not in entry["tag"]:
-                    new_result.append(entry)
-                if len(new_result) == CHARACTER_RELATED_TAGS_LIMIT:
-                    break
-            results.append(new_result)
-        resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":result} for selected_character, selected_tag, result in zip(selected_characters, selected_tags, results)]
+        resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":[]} for selected_character, selected_tag in zip(selected_characters, selected_tags)]
+    
+    # if selected_tags:
+    #     tasks = [
+    #         execute_get_related_tags(
+    #             tags=[selected_tag],
+    #             limit=RELATED_TAGS_LIMIT
+    #         )
+    #         for selected_tag in selected_tags
+    #     ]
+    #     results = []
+    #     for result in await asyncio.gather(*tasks):
+    #         result = json.loads(result)["results"]
+    #         new_result = []
+    #         for entry in result:
+    #             if '(' not in entry["tag"] and ')' not in entry["tag"]:
+    #                 new_result.append(entry)
+    #         results.append(new_result)
+    #     resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":result} for selected_character, selected_tag, result in zip(selected_characters, selected_tags, results)]
 
     modified_search_results: List[Any] = []
 
@@ -164,83 +172,68 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
 
     modified_search_results.insert(0, {"search_tags":",".join(orig_characters), "results":resolved_character_results})
 
-    # logger.info("搜索结果:\n%s", json.dumps(modified_search_results, indent=2, ensure_ascii=False))
-    return modified_search_results
+    modified_search_results = replace_underscores(modified_search_results)
 
-async def expand_zh_tags(user_description: str) -> list[str]:
-    df_sampled = sample_tags(top_k=SAMPLE_TOP_K, max_threshold=SAMPLE_MAX_THRESHOLD)
+    # logger.info("搜索结果:\n%s", json.dumps(modified_search_results, indent=2, ensure_ascii=False))
+    return modified_search_results, selected_characters
+
+async def expand_zh_tags(user_description: str) -> tuple[str, str]:
+    df_sampled = sample_tags(weighted_k=WEIGHTED_K, random_k=RANDOM_K, max_threshold=SAMPLE_MAX_THRESHOLD)
     candidates = df_sampled.to_dict(orient="records")
     candidates = [candidate["cn_name"].split(',')[0] for candidate in candidates]
     logger.info("候选采样标签: %s", candidates)
 
     expand_context = (
         f"【用户原始描述 / User Description】:\n{user_description}\n\n"
-        f"【候选采样标签 / Sampled Candidates】:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}"
+        f"【候选采样标签 / Sampled Candidates】:\n{candidates}"
     )
 
     logger.info("正在尝试补充标签...")
 
-    resp = await client_cheap.chat.completions.create(
-        model=cfg["cheap"]["model"],
+    resp = await client_quality.chat.completions.create(
+        model=cfg["quality"]["model"],
         messages=[
-            {"role": "system", "content": _JAILBREAKER+"\n\n"+_EXPAND_TAGS_SYSTEM_PROMPT},
+            {"role": "system", "content": _EXPAND_TAGS_SYSTEM_PROMPT},
             {"role": "user", "content": expand_context},
         ],
-        reasoning_effort="low",
+        reasoning_effort="medium",
         extra_body={"thinking": {"type": "enabled"}},
         temperature=1.0,
         top_p=0.9,
     )
 
+    # print("-"*10)
+    # print(resp.choices[0].message.reasoning_content)
+    # print("-"*10)
+
     llm_output = resp.choices[0].message.content
+
     logger.info("LLM 标签补充分析响应内容:\n%s", llm_output)
 
-    selected_tags_part = ""
-    parts = llm_output.split("### 2. 候选筛选与画面补充")
+    new_natural_prompt = ""
+    new_tags_prompt = ""
+
+    parts = llm_output.split("### 2. 最终输出")
     if len(parts) > 1:
-        selected_tags_part = parts[1].strip()
+        raw_tags = parts[1].strip().strip("`").strip()
+        new_tags_prompt = re.sub(r"\s*,\s*", ", ", raw_tags)
 
-    new_tags = re.sub(r"[`\s]", "", selected_tags_part)
+        sub_parts = parts[0].split("### 1. 自然语言描述")
+        if len(sub_parts) > 1:
+            raw_natural = sub_parts[1].strip().strip("`").strip()
+            new_natural_prompt = re.sub(r"\s+", " ", raw_natural)
 
-    if new_tags and new_tags.lower() != "none":
-        return new_tags
-
-    return ""
+    return new_tags_prompt, new_natural_prompt
 
 async def agent(user_description: str) -> tuple[str, str, str]:
-    resp = await client_cheap.chat.completions.create(
-        model=cfg["cheap"]["model"],
-        messages=[
-            {"role": "system", "content": _LABEL_SYSTEM_PROMPT},
-            {"role": "user", "content": user_description},
-        ],
-        extra_body={"thinking": {"type": "disabled"}},
-        temperature=0.1,
-    )
-    resp_content = resp.choices[0].message.content
-    
-    tags = [tag.strip() for tag in resp_content.split(',')]
-    zh_pattern = re.compile(r'[\u4e00-\u9fff]')
-    zh_tags = ""
-    en_tags = ""
-    for tag in tags:
-        if zh_pattern.search(tag):
-            zh_tags += tag + ","
-        else:
-            en_tags += tag + ","
-    
-    logger.info("zh tags: %s | en tags: %s", zh_tags, en_tags)
+    logger.info("用户描述: %s", user_description)
 
-    add_tags = await expand_zh_tags(user_description)
-    if add_tags:
-        user_description += "," + add_tags
-        zh_tags += add_tags
-    
-    search_results = await search(zh_tags, user_description)
+    zh_tags, user_description = await expand_zh_tags(user_description)
+            
+    search_results, selected_characters = await search(zh_tags, user_description)
 
     user_context = (
-        f"【输出格式要求 / Output Format】:\n{_ANIMA_OUTPUT_FORMAT}\n\n"
-        f"【检索与关联标签结果 / Search Results】:\n{json.dumps(search_results, ensure_ascii=False, indent=2)}\n\n"
+        f"【检索与关联标签结果 / Search Results】:\n{search_results}\n\n"
         f"【用户原始输入 / User Description】:\n{user_description}\n\n"
         f"{_ANIMA_ASSEMBLY_DIRECTIVE}"
     )
@@ -250,23 +243,19 @@ async def agent(user_description: str) -> tuple[str, str, str]:
     resp = await client_quality.chat.completions.create(
         model=cfg["quality"]["model"],
         messages=[
-            {"role": "system", "content": _JAILBREAKER},
+            {"role": "system", "content": _ANIMA_OUTPUT_FORMAT},
             {"role": "user", "content": user_context},
         ],
         reasoning_effort="high",
         extra_body={"thinking": {"type": "enabled"}},
-        temperature=0.1,
+        temperature=0.0,
     )
+
+    # print("-"*10)
+    # print(resp.choices[0].message.reasoning_content)
+    # print("-"*10)
     
-    final_output = resp.choices[0].message.content
-
-    prompt_pattern = r"## Prompt\s*```([\s\S]*?)```"
-    prompt_match = re.search(prompt_pattern, final_output)
-    prompt_content = prompt_match.group(1).strip() if prompt_match else "未找到 Prompt 内容"
-
-    chinese_pattern = r"## 中文解释\s*([\s\S]*?)(?=\n##|$)"
-    chinese_match = re.search(chinese_pattern, final_output)
-    chinese_content = chinese_match.group(1).strip() if chinese_match else "未找到中文解释内容"
+    prompt_content = resp.choices[0].message.content
 
     try:
         tags_prompt, natural_prompt = prompt_content.strip().rsplit('\n', 1)
@@ -282,12 +271,12 @@ async def agent(user_description: str) -> tuple[str, str, str]:
             tags=tags_prompt.split(','),
             limit=ARTIST_RECOMMEND_LIMIT
         )
-        recommendations_data = json.loads(recommendations_json)["results"]
+        recommendations_data = json.loads(recommendations_json).get("results", [])
 
         if len(recommendations_data) > 0:
             choose_context = (
                 f"【用户原始描述】:\n{user_description}\n\n"
-                f"【候选画师数据】:\n{json.dumps(recommendations_data, ensure_ascii=False, indent=2)}"
+                f"【候选画师数据】:\n{recommendations_data}"
             )
             
             choose_resp = await client_cheap.chat.completions.create(
@@ -320,7 +309,7 @@ async def agent(user_description: str) -> tuple[str, str, str]:
         if has_artist_tag:
             logger.info("tags_prompt 中已存在画师标签，跳过自动推荐。")
 
-    return tags_prompt, natural_prompt, chinese_content
+    return tags_prompt, natural_prompt, user_description, selected_characters
 
 async def extract_prompt_params(text: str):
     messages = [
@@ -332,7 +321,7 @@ async def extract_prompt_params(text: str):
         model=cfg["cheap"]["model"],
         messages=messages,
         extra_body={"thinking": {"type": "disabled"}},
-        temperature=0.1,
+        temperature=0.0,
     )
 
     raw = response.choices[0].message.content
