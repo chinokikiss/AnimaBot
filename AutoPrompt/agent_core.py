@@ -276,9 +276,9 @@ async def _select_artist_from_user_style(user_description: str) -> str | None:
                     ),
                 },
             ],
-            extra_body={"thinking": {"type": "disabled"}},
-            temperature=1.0,
-            top_p=0.9,
+            reasoning_effort="low",
+            extra_body={"thinking": {"type": "enabled"}},
+            temperature=0.0,
         )
     except Exception as e:
         logger.warning("画风画师选择失败，将使用加权采样: %s", e)
