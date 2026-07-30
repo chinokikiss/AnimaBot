@@ -9,9 +9,9 @@ from openai import AsyncOpenAI
 from typing import List, Dict, Any
 
 from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
-                           _CHOOSE_ARTIST_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
+                           _ARTIST_SELECTION_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
 from .tools import execute_search_tags, execute_get_related_tags, execute_get_artist_recommendations
-from .utils import sample_tags, replace_underscores
+from .utils import sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -41,9 +41,11 @@ BATCH_SIZE = 5
 SEARCH_RESULT_LIMIT = 40
 RELATED_TAGS_LIMIT = 50
 WEIGHTED_K = 100
-RANDOM_K = 25
+RANDOM_K = 50
 SAMPLE_MAX_THRESHOLD = 1000000
 ARTIST_RECOMMEND_LIMIT = 30
+ARTIST_SAMPLE_LIMIT = 10
+ARTIST_CATALOG_PATH = os.path.join(os.path.dirname(__file__), "artist.txt")
 
 
 async def search(zh_tags: str, user_description: str) -> List[Any]:
@@ -75,13 +77,12 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
         category = q.get("category", "general")
         all_tags = [t.strip() for t in re.split(r'[,，、]+', query_str) if t.strip()]
         if len(all_tags) > BATCH_SIZE:
-            for i in range(0, len(all_tags) // BATCH_SIZE * BATCH_SIZE, BATCH_SIZE):
+            for i in range(0, len(all_tags), BATCH_SIZE):
                 batch = all_tags[i:i + BATCH_SIZE]
                 search_queries.append({
                     "query": ", ".join(batch),
                     "category": category
                 })
-            search_queries[-1]["query"] += ", " + ", ".join(all_tags[i+BATCH_SIZE:])
         else:
             if query_str:
                 search_queries.append({
@@ -96,6 +97,8 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
             query=q["query"],
             search_mode="concept_explore",
             category=q["category"],
+            # wiki 只在角色消歧时有用；general 检索带 wiki 会灌入大量噪声文本
+            include_wiki=(q["category"] == "character"),
         )
         for q in search_queries
     ]
@@ -172,7 +175,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
 
     modified_search_results.insert(0, {"search_tags":",".join(orig_characters), "results":resolved_character_results})
 
-    modified_search_results = replace_underscores(modified_search_results)
+    modified_search_results = escape_parentheses(modified_search_results)
 
     # logger.info("搜索结果:\n%s", json.dumps(modified_search_results, indent=2, ensure_ascii=False))
     return modified_search_results, selected_characters
@@ -202,9 +205,9 @@ async def expand_zh_tags(user_description: str) -> tuple[str, str]:
         top_p=0.9,
     )
 
-    # print("-"*10)
-    # print(resp.choices[0].message.reasoning_content)
-    # print("-"*10)
+    print("-"*10)
+    print(resp.choices[0].message.reasoning_content)
+    print("-"*10)
 
     llm_output = resp.choices[0].message.content
 
@@ -225,9 +228,77 @@ async def expand_zh_tags(user_description: str) -> tuple[str, str]:
 
     return new_tags_prompt, new_natural_prompt
 
-async def agent(user_description: str) -> tuple[str, str, str]:
+def _split_layers(prompt_content: str) -> tuple[str, str]:
+    """按空行切分硬锚点层与空间叙事层。空间叙事层可能被模型折成多行，
+    因此不能用 rsplit('\\n', 1)——那样会把叙事层的前几句并进标签里。"""
+    content = (prompt_content or "").strip()
+    content = re.sub(r"^```[a-zA-Z]*\n|\n```$", "", content).strip()
+    if not content:
+        return "", "none"
+
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", content) if b.strip()]
+    if len(blocks) >= 2:
+        tags_block, nl_block = blocks[0], " ".join(blocks[1:])
+    else:
+        lines = [l.strip() for l in blocks[0].split("\n") if l.strip()]
+        if len(lines) >= 2:
+            tags_block, nl_block = lines[0], " ".join(lines[1:])
+        else:
+            return blocks[0], "none"
+
+    nl_block = " ".join(nl_block.split())
+    return tags_block, nl_block or "none"
+
+
+async def _select_artist_from_user_style(user_description: str) -> str | None:
+    try:
+        with open(ARTIST_CATALOG_PATH, encoding="utf-8") as f:
+            artist_catalog = f.read().strip()
+    except OSError as e:
+        logger.warning("读取画师目录失败，将使用加权采样: %s", e)
+        return None
+
+    allowed_artists = set(re.findall(r"(?m)^(@[a-zA-Z0-9_.-]+):", artist_catalog))
+    if not artist_catalog or not allowed_artists:
+        logger.warning("画师目录为空或没有有效画师，将使用加权采样。")
+        return None
+
+    try:
+        resp = await client_cheap.chat.completions.create(
+            model=cfg["cheap"]["model"],
+            messages=[
+                {"role": "system", "content": _ARTIST_SELECTION_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"【用户原始描述】\n{user_description}\n\n"
+                        f"【候选画师目录】\n{artist_catalog}"
+                    ),
+                },
+            ],
+            extra_body={"thinking": {"type": "disabled"}},
+            temperature=0.0,
+        )
+    except Exception as e:
+        logger.warning("画风画师选择失败，将使用加权采样: %s", e)
+        return None
+
+    selected_artist = (resp.choices[0].message.content or "").strip().strip("`").strip()
+    if selected_artist.lower() == "none":
+        logger.info("用户未指定画风，进入画师加权采样。")
+        return None
+    if selected_artist not in allowed_artists:
+        logger.warning("画风画师节点返回了目录外结果 %r，将使用加权采样。", selected_artist)
+        return None
+
+    logger.info("根据用户画风选择画师: %s", selected_artist)
+    return normalize_anima_tags(selected_artist)
+
+
+async def agent(user_description: str) -> tuple[str, str, str, List[str]]:
     logger.info("用户描述: %s", user_description)
 
+    original_description = user_description
     zh_tags, user_description = await expand_zh_tags(user_description)
             
     search_results, selected_characters = await search(zh_tags, user_description)
@@ -251,59 +322,44 @@ async def agent(user_description: str) -> tuple[str, str, str]:
         temperature=0.0,
     )
 
-    # print("-"*10)
-    # print(resp.choices[0].message.reasoning_content)
-    # print("-"*10)
+    print("-"*10)
+    print(resp.choices[0].message.reasoning_content)
+    print("-"*10)
     
     prompt_content = resp.choices[0].message.content
 
-    try:
-        tags_prompt, natural_prompt = prompt_content.strip().rsplit('\n', 1)
-    except:
-        tags_prompt, natural_prompt = prompt_content, "none"
+    tags_prompt, natural_prompt = _split_layers(prompt_content)
+    tags_prompt = normalize_anima_tags(tags_prompt)
+    tags_prompt = reapply_user_weights(tags_prompt, original_description)
 
     has_artist_tag = any(tag.strip().startswith('@') for tag in tags_prompt.split(','))
 
     if not has_artist_tag and tags_prompt:
         logger.info("tags_prompt 中未发现画师标签，开始匹配画师...")
-            
-        recommendations_json = await execute_get_artist_recommendations(
-            tags=tags_prompt.split(','),
-            limit=ARTIST_RECOMMEND_LIMIT
-        )
-        recommendations_data = json.loads(recommendations_json).get("results", [])
 
-        if len(recommendations_data) > 0:
-            choose_context = (
-                f"【用户原始描述】:\n{user_description}\n\n"
-                f"【候选画师数据】:\n{recommendations_data}"
+        artist_tag = await _select_artist_from_user_style(original_description)
+        if not artist_tag:
+            recommendations_json = await execute_get_artist_recommendations(
+                tags=tags_prompt.split(','),
+                limit=ARTIST_RECOMMEND_LIMIT
             )
-            
-            choose_resp = await client_cheap.chat.completions.create(
-                model=cfg["cheap"]["model"],
-                messages=[
-                    {"role": "system", "content": _CHOOSE_ARTIST_SYSTEM_PROMPT},
-                    {"role": "user", "content": choose_context},
-                ],
-                extra_body={"thinking": {"type": "disabled"}},
-                temperature=1.0,
-                top_p=0.9,
+            recommendations_data = json.loads(recommendations_json).get("results", [])
+            selected_artist_data = sample_artist_candidate(
+                recommendations_data,
+                top_n=ARTIST_SAMPLE_LIMIT,
             )
-            
-            selected_artist = choose_resp.choices[0].message.content.strip()
-            selected_artist = re.sub(r"^['\"`@\s]+|['\"`\s]+$", "", selected_artist)
-            
-            if selected_artist and selected_artist.lower() != "none":
-                logger.info("匹配到最符合描述的画师: %s", selected_artist)
-                tags_prompt_clean = tags_prompt.strip()
-                if tags_prompt_clean.endswith(','):
-                    tags_prompt = f"{tags_prompt_clean} @{selected_artist}"
-                else:
-                    tags_prompt = f"{tags_prompt_clean}, @{selected_artist}"
+
+            if selected_artist_data:
+                selected_artist = str(selected_artist_data.get("artist") or "").strip()
+                if selected_artist and selected_artist.lower() != "none":
+                    logger.info("加权采样到画师: %s", selected_artist)
+                    artist_tag = normalize_anima_tags(f"@{selected_artist}")
             else:
-                logger.info("未筛选到契合的画师。")
-        else:
-            logger.info("未检索到相关联的画师数据。")
+                logger.info("未检索到相关联的画师数据。")
+
+        if artist_tag:
+            tags_prompt_clean = tags_prompt.strip().rstrip(',')
+            tags_prompt = f"{tags_prompt_clean}, {artist_tag}"
                 
     else:
         if has_artist_tag:

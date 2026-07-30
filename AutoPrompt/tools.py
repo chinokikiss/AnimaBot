@@ -13,8 +13,12 @@ _TIMEOUT = 90
 _active_url: str = _MCP_URL_HF
 
 
+def get_active_endpoint_name(url: str) -> str:
+    return "ms" if url == _MCP_URL_MS else "hf"
+
+
 def get_active_endpoint() -> str:
-    return "ms" if _active_url == _MCP_URL_MS else "hf"
+    return get_active_endpoint_name(_active_url)
 
 _FALLBACK_TOOLS = [
     {
@@ -155,7 +159,9 @@ async def _rpc(method: str, params: dict, req_id: int = 1) -> dict:
     global _active_url
 
     last_error = None
-    for url in (_MCP_URL_HF, _MCP_URL_MS):
+    # 上次成功的端点优先，避免端点故障时每次调用都先在坏端点上超时/握手失败
+    candidates = [_active_url] + [u for u in (_MCP_URL_HF, _MCP_URL_MS) if u != _active_url]
+    for url in candidates:
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 session_id = await _new_session_id(client, url)
@@ -176,8 +182,8 @@ async def _rpc(method: str, params: dict, req_id: int = 1) -> dict:
             if "error" in rpc_resp:
                 raise RuntimeError(rpc_resp["error"].get("message", f"{method} 返回错误"))
 
-            if url == _MCP_URL_MS:
-                print("[tools] HF 端点本次失败，已回退 MS", file=sys.stderr)
+            if url != _active_url:
+                print(f"[tools] 已切换 MCP 端点 → {get_active_endpoint_name(url)}", file=sys.stderr)
             _active_url = url
             return rpc_resp.get("result", {})
 
