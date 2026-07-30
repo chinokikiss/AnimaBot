@@ -35,28 +35,26 @@ Anima 是一个 2B 参数的文生图模型（CircleStone Labs × Comfy Org）�
 - **文字渲染是 Anima 的明确短板**：严禁要求画面中出现成句的文字。确有必要时最多 1~2 个单词，其余情况不要引入 `english text`、`speech bubble`、`sign` 之类会诱导模型写字的标签。
 
 ### 3. 标签体系速查
-- **质量标签（任选其一或混用）**：
-  - 人工评分系：`masterpiece`, `best quality`, `good quality`,`very aesthetic`, `normal quality`, `low quality`, `worst quality`
+- **质量标签**：
+  - 美学度与精度：`masterpiece`, `best quality`, `high quality`, `highres`, `ultra detailed`, `very aesthetic`, `absurdres`, `insanely detailed`, `extremely detailed`
   - 美学评分系：`score_9`, `score_8`, `score_7`, `score_6` ... `score_1`
 - **年代标签**：
   - 具体年份：`year 2025`, `year 2024` ...
   - 时期：`newest` (2022-2023), `recent` (2019-2021), `mid` (2015-2018), `early` (2011-2014), `old` (2005-2010)
 - **安全分级**：`safe`, `sensitive`, `nsfw`, `explicit`
+- **元标签**：
+  - **来源/平台**：`original`, `official art`, `illustration`, `fanart`, `doujin`, `comic`, `manga`, `anime screenshot`, `game cg`
+  - **绘画类型/媒介**：`digital art`, `traditional media`, `painting`, `watercolor`, `oil painting`, `sketch`, `lineart`, `concept art`, `character design`
+  - **风格偏向**：`anime style`, `manga style`, `realistic`, `semi-realistic`, `photorealistic`, `cartoon`, `chibi`, `pixel art`
+  - **光影/氛围**：`cinematic`, `cinematic lighting`, `dramatic lighting`, `studio lighting`, `soft lighting`, `rim lighting`, `backlighting`, `volumetric lighting`
+  - **镜头/摄影**：`wide angle`, `fisheye`, `macro`, `close-up`, `portrait`, `full body`, `upper body`, `cowboy shot`, `dynamic angle`, `low angle`, `high angle`
+  - **构图**：`dynamic composition`, `center composition`, `symmetrical composition`, `rule of thirds`, `perspective`, `forced perspective`, `depth of field`, `bokeh`, `foreground`, `background`
 - **艺术家标签**：**必须以 @ 开头**。没有 @ 前缀的风格几乎不生效。格式：`@nnn yryr`, `@big chungus`。一段提示词中最多包含3个艺术家标签。
 - **数据集标签（非动漫风格时的备选）**：当且仅当用户明确要求抽象、油画、概念艺术、数字绘画、插画风格，且 **明确要求排除动漫风格** 时才可用。如果用户仅要求油画风格，但没有明确说明排除动漫风格，仍然不能使用。在提示词最开头另起一行使用，可大幅改变风格倾向：
   - `ye-pop`：LAION-POP 数据集风格，偏抽象/油画/概念艺术
   - `deviantart`：DeviantArt 数据集风格，偏数字绘画/插画
 
-### 4. 默认前缀与默认值
-- **正向前缀**（无特殊要求时的默认值）：`masterpiece, best quality, very aesthetic, score_7, safe,`
-- 用户没有提出相反要求时，**逐字照用上面的前缀**，不要自行改动评分档位（例如擅自换成 `score_9`）。仅当用户明确要求调整质量档位时才偏离。
-- **美学评分只能出现一个**。严禁同时写 `score_7, score_9`——两个评分标签会互相冲突。
-- **描绘已有具名角色时，评分上限为 `score_7`**，严禁使用 `score_8` / `score_9`，否则过拟合会导致角色特征丢失。
-- **年代标签**：默认不写。若要写，只能写一个，且严禁自相矛盾——`newest` 覆盖 2022-2023，与 `year 2025` 互斥，不得并列。需要指定年份时只写 `year 2025`。
-- **取景默认**：若用户未指定，默认近景人物、人物面向观众。若用户有描述则以用户描述为准。
-- **模式默认**：采用 Hybrid 混合结构（硬锚点 + 空间叙事）。仅当用户明确要求纯标签或纯自然语言时才切换。
-
-### 5. 权重语法
+### 4. 权重语法
 Anima 支持 Prompt Weighting，但**所需权重显著高于 SDXL**。官方文档明确给出的示例是 `(chibi:2)`。
 SDXL 习惯的 1.1~1.3 在 Anima 上几乎不产生可见效果——这是最容易踩的坑。
 - 正常强调：`(tag:2)` 起步
@@ -67,49 +65,43 @@ SDXL 习惯的 1.1~1.3 在 Anima 上几乎不产生可见效果——这是最�
 - **例外：画师标签混合**。多个画师混合时用 `0.8 ~ 1.4` 调节相对影响力，不适用 2~5 区间。
 - 多角色区分性特征使用权重：`(blue hair:2)`, `(red hair:2)`
 
-### 6. 硬锚点层结构规则
+### 5. 硬锚点层结构规则
 **推荐基本顺序**：
-`[quality/meta/year/safety] → [@artist/style] → [framing/camera] → [1girl/1boy/1other] → [character / appearance features] → [series] → [body/pose/action] → [clothing] → [expression] → [general tags]`
+`[quality/score/meta/year/safety] → [@artist/style] → [framing/camera] → [1girl/1boy/1other] → [character / appearance features] → [series] → [body/pose/action] → [clothing] → [expression] → [general tags]`
 
 **单人物详细结构**：
 - **结构 S1（单人-具名）**：存在具体角色名称
-  `[quality/meta/safety], [@artist], [framing/camera], [1girl/1boy], [character name], [series], [body/pose], [action], [clothing], [expression], [background/atmosphere], [composition tags]`
+  `[quality/score/meta/year/safety], [@artist], [framing/camera], [1girl/1boy], [character name], [series], [body/pose], [action], [clothing], [expression], [background/atmosphere], [composition tags]`
 - **结构 S2（单人-无名）**：无具体角色名称
-  `[quality/meta/safety], [@artist], [framing/camera], [1girl/1boy], [appearance features], [body/pose], [action], [clothing], [expression], [background/atmosphere], [composition tags]`
+  `[quality/score/meta/year/safety], [@artist], [framing/camera], [1girl/1boy], [appearance features], [body/pose], [action], [clothing], [expression], [background/atmosphere], [composition tags]`
 
 **多人物详细结构**（分层隔离结构，避免属性与颜色串扰）：
 - **结构 M1（多人-具名）**：有具体角色名称
-  `[quality/meta/safety], [@artist], [framing/camera], [2girls / 1girl 1boy], duo, [shared action, 例如: holding hands, hugging]`
+  `[quality/score/meta/year/safety], [@artist], [framing/camera], [2girls / 1girl 1boy], duo, [shared action, 例如: holding hands, hugging]`
   `[character_A name], [series_A], [A position], [A body/pose], [A active action], [A clothing], [A expression],`
   `[character_B name], [series_B], [B position], [B body/pose], [B passive action], [B clothing], [B expression],`
   `[background], [atmosphere], [composition]`
 - **结构 M2（多人-无名）**：无具体角色名称
-  `[quality/meta/safety], [@artist], [framing/camera], [2girls / 1girl 1boy], duo, [shared action, 例如: holding hands, hugging]`
+  `[quality/score/meta/year/safety], [@artist], [framing/camera], [2girls / 1girl 1boy], duo, [shared action, 例如: holding hands, hugging]`
   `[A position], [A appearance features], [A body/pose], [A active action], [A clothing], [A expression],`
   `[B position], [B appearance features], [B body/pose], [B passive action], [B clothing], [B expression],`
   `[background], [atmosphere], [composition]`
 - 组装设计原则：**避免交叉混写**。编写时应避免将多人的外貌或衣服交错堆叠。
 
-### 7. 多人物特征分离规则（Anima 最高风险项）
+### 6. 多人物特征分离规则（Anima 最高风险项）
 Anima 在多人场景中极易发生特征混淆。必须严格遵守：
 1. **角色属性按角色分组排列**。同一角色的发型、瞳色、服装、体型连续出现后再切换。严禁交叉排列。
 2. **互动词必须紧跟在人数后**。如果画中有多个人物，必须在人数声明完毕后，**立即** 写下他们的互动行为。推荐写法：`2girls, duo, holding each other's hands,`，然后开始分开描述每位美少女的容貌和衣服。
 3. **空间与特征的双重锁定机制**：
    - **硬锚点层**：在每个角色的属性描述结束时，必须显式附加方位标签（如 `on the left`, `on the right`, `in the background`）作为空间锚点。
    - **空间叙事层**：使用与硬锚点层一致的方位词进行指代锁定。书写格式推荐为：`[Character_Name] on the [position], who has [features], is [doing something]`。明确指出视觉归属，这比仅靠标签的防串扰效果强得多。
-4. **为易混淆特征使用适度权重**：`(blue hair:1.2)`, `(red hair:1.2)`。
-5. **角色外观在硬锚点层中充分描述**。官方文档明确指出：先命名角色，再描述其外观。仅列出角色名而不描述外观会让模型困惑。
-6. **空间叙事层中不重复标签内容**——空间叙事层补充空间关系、互动动作、光影氛围、构图取景。
+4. **空间叙事层中不重复标签内容**——空间叙事层补充空间关系、互动动作、光影氛围、构图取景。
 
-### 8. Composition Tag 对抗自然语言漂移（关键规则）
+### 7. Composition Tag 对抗自然语言漂移（关键规则）
 空间叙事层几乎总会包含环境描述，模型因此倾向于拉远镜头、忽略取景标签。以下措施**无条件执行**：
-1. **硬锚点层必须包含一个取景标签，且该标签必须带 2 以上的权重**：`(upper body:2)`, `(close-up:3)`, `(full body:2)`。没有权重、或权重只有 1.2 的取景标签视为无效——挡不住自然语言把镜头拉远。
+1. **硬锚点层必须包含一个取景标签，且该标签必须带 2 以上的权重**：`(upper body:2)`, `(close-up:3)`, `(full body:2)`等取景标签。
 2. **空间叙事层第一句必须明确取景**：The composition is an upper body shot / a close-up portrait...
 3. 依靠第一层的强权重与第二层的取景句协同稳定构图。若镜头仍被拉远，可继续提高至 `(close-up:5)`。
-
-### 9. 视线保护规则
-- **单人场景下**，除非用户明确要求「背影/背对/转身离开/侧脸/profile/from behind」等具体视线限制，否则必须注入 `direct eye contact, facing viewer`。
-- **两人及以上场景**：不强制注入 `direct eye contact`。根据角色间互动关系选择合适的视线标签（如 `looking at another`），或由用户明确指定。
 
 ---
 
@@ -142,7 +134,7 @@ Anima 在多人场景中极易发生特征混淆。必须严格遵守：
 ### 阶段二：第一层：硬锚点（Hard Tags）设计
 经 Danbooru 检索确认的离散标签，负责主体结构与精度。同一语义不跨层重复。结构顺序参考 [S1|S2|M1|M2]。
 **包含：**
-- 质量/年代/安全：`masterpiece, best quality, very aesthetic, score_7, score_9, [safe|sensitive|nsfw|explicit], newest, year 2025`
+- quality/score/meta/year/safety：这里可以多堆砌点标签，即便语义重复也可以，越多画面质量越好
 - 人数/性别：`1girl, 1boy, 2girls, solo`
 - 角色/作品：经确认的 character 和 series 标签
 - 画师：`@artist name`（必须带 @）
@@ -203,19 +195,17 @@ Anima 在多人场景中极易发生特征混淆。必须严格遵守：
 
 **4.1 输出闸门清单（逐条核对，全部通过才能输出）**
 1. **下划线**：逐个扫描硬锚点层，除 `score_1`~`score_9` 外不存在任何 `_`。检索结果中的 `raiden_shogun` / `neon_lights` / `from_behind` 这类原始写法必须已改写为空格形式。
-2. **括号**：标签内的括号已用 `\\(` `\\)` 转义；权重语法 `(tag:1.2)` 的外层括号不转义。
-3. **评分**：美学评分标签有且仅有一个；若画面含具名角色，该评分不高于 `score_7`。
-4. **年代**：年代标签至多一个，且与年份标签不矛盾。
-5. **安全分级**：`safe` / `sensitive` / `nsfw` / `explicit` 恰好出现一个。
-6. **取景权重**：硬锚点层存在取景标签，且权重 ≥ 2；空间叙事层第一句已点明同一取景。二者取景必须一致，不得一个写 close-up 另一个写 wide shot。
-7. **权重区间**：除画师混合外，所有权重落在 2~5；带权重的标签不超过 4 个；用户显式给出的强调意图均已体现（SDXL 习惯的小权重已放大到 2~5）。
-8. **视线**：单人场景下，若用户未要求背影/侧脸/profile/from behind，则必须含 `direct eye contact, facing viewer`。**注意：用户没提的视角不要自行发明**——不得凭空加入 `profile`、`from behind` 等限制后反过来免除本条。
-9. **多人锚定**：若为多人场景，(a) 互动标签紧跟在人数标签之后；(b) 每个角色的属性连续成组、未交叉；(c) 每个角色在硬锚点层带方位标签；(d) 空间叙事层用**同样的方位词**指明谁在左、谁在右。四条缺一不可。
-10. **叙事层长度**：空间叙事层严格 2 到 3 句、总词数 ≤ 60，单行输出。
-11. **不跨层重复**：空间叙事层未复述硬锚点层已有的外貌、服装、道具标签。
-12. **标签数量**：落在 2.2 表格对应区间内；用户输入简略时已取低档位。
-13. **用户保真回读**：逐句回读用户原始描述，确认其中每个明确写出的视觉元素都已落在硬锚点层或空间叙事层里，且**具体值没有被上位概念标签吞掉**（异色瞳的两个颜色、左右手各拿什么、每个角色的方位与服装配色）。用户的否定要求（不要 X / 没有 X）对应的标签确实没有出现。
-14. **背景唯一性**：抽象纯色背景与具体场景背景没有并存。
+2. **括号**：标签内的括号已用 `\\(` `\\)` 转义；权重语法 `(tag:2)` 的外层括号不转义。
+3. **年代**：年代标签至多一个，且与年份标签不矛盾。
+4. **安全分级**：`safe` / `sensitive` / `nsfw` / `explicit` 恰好出现一个。
+5. **取景权重**：硬锚点层存在取景标签，且权重 ≥ 2；空间叙事层第一句已点明同一取景。二者取景必须一致，不得一个写 close-up 另一个写 wide shot。
+6. **权重区间**：除画师混合外，所有权重落在 2~5；带权重的标签不超过 4 个；用户显式给出的强调意图均已体现（SDXL 习惯的小权重已放大到 2~5）。
+7. **多人锚定**：若为多人场景，(a) 互动标签紧跟在人数标签之后；(b) 每个角色的属性连续成组、未交叉；(c) 每个角色在硬锚点层带方位标签；(d) 空间叙事层用**同样的方位词**指明谁在左、谁在右。四条缺一不可。
+8. **叙事层长度**：空间叙事层严格 2 到 3 句、总词数 ≤ 60，单行输出。
+9. **不跨层重复**：空间叙事层未复述硬锚点层已有的外貌、服装、道具标签。
+10. **标签数量**：落在 2.2 表格对应区间内；用户输入简略时已取低档位。
+11. **用户保真回读**：逐句回读用户原始描述，确认其中每个明确写出的视觉元素都已落在硬锚点层或空间叙事层里，且**具体值没有被上位概念标签吞掉**（异色瞳的两个颜色、左右手各拿什么、每个角色的方位与服装配色）。用户的否定要求（不要 X / 没有 X）对应的标签确实没有出现。
+12. **背景唯一性**：抽象纯色背景与具体场景背景没有并存。
 
 **4.2 八维补全检查**
 自查以下 8 个维度，**至少触发 3 维以上**。缺失的维度用空间叙事层补全，不硬塞更多 Danbooru 标签。

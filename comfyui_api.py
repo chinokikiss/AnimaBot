@@ -6,7 +6,7 @@ import httpx
 from utils import log
 
 # 在此配置你的 ComfyUI 实例地址
-COMFY_HOSTS = ["http://127.0.0.1:8188", "http://127.0.0.1:8189"]
+COMFY_HOSTS = ["http://127.0.0.1:8188"]
 
 _pick_lock = asyncio.Lock()
 
