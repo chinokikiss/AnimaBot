@@ -1,7 +1,7 @@
 {
   "2": {
     "inputs": {
-      "clip_name": "miaomiaoHarem_anima14_txt.safetensors",
+      "clip_name": "miaomiaoHarem_anima12_txt.safetensors",
       "type": "stable_diffusion",
       "device": "default"
     },
@@ -32,7 +32,7 @@
   },
   "8": {
     "inputs": {
-      "text": "masterpiece, best quality, very aesthetic, score_7, explicit, newest, year 2025, 1girl, loli, klee_\\(genshin_impact\\), genshin_impact, looking at viewer, single_bare_shoulder, red_skirt, thighs, stomach, grey_background, drooling, open mouth, spread legs, @nyxerebos",
+      "text": "masterpiece, best quality, very aesthetic, score_7, score_9, safe, (upper body:1.2), (feet out of frame:1.1), 2girls, duo, kiss, hug, hand on another's cheek, closed eyes, koharu \\(blue archive\\), blue archive, kurumi \\(blue archive\\), school, grid background, sidelighting, @wfa5051",
       "clip": [
         "2",
         0
@@ -45,7 +45,7 @@
   },
   "9": {
     "inputs": {
-      "text": "worst quality, low quality, score_1, score_2, score_3, artist name",
+      "text": "worst quality, low quality, score_1, score_2, score_3, artist name, blurry, jpeg artifacts, chromatic aberration",
       "clip": [
         "2",
         0
@@ -58,14 +58,14 @@
   },
   "10": {
     "inputs": {
-      "seed": 568395182075432,
+      "seed": 896352575357436,
       "steps": 30,
       "cfg": 5,
       "sampler_name": "euler",
       "scheduler": "normal",
       "denoise": 1,
       "model": [
-        "17",
+        "31",
         0
       ],
       "positive": [
@@ -102,19 +102,9 @@
       "title": "VAE解码"
     }
   },
-  "17": {
-    "inputs": {
-      "unet_name": "miaomiaoHarem_anima12.safetensors",
-      "weight_dtype": "default"
-    },
-    "class_type": "UNETLoader",
-    "_meta": {
-      "title": "UNet加载器"
-    }
-  },
   "26": {
     "inputs": {
-      "text": "The composition is a medium shot focusing on Klee's upper body and thighs, highlighting her bare shoulder and exposed abdomen. She masturbates with one hand, her mouth open and drooling, staring directly at the viewer with a mixture of pleasure and vulnerability. The plain gray background creates a studio-like isolation, with soft rim lighting defining her silhouette and the glossy texture of her lips.",
+      "text": "The composition is an upper body shot with feet out of frame, showing Koharu and Kurumi facing each other closely. Kurumi gently places her hand on Koharu's cheek as they share a kiss with closed eyes, illuminated by warm sidelighting from the sun. On the table in front, a stuffed toy, a heart, and flowers are arranged against the school grid background.",
       "clip": [
         "2",
         0
@@ -141,7 +131,21 @@
       "title": "条件连接"
     }
   },
-  "29": {
+  "31": {
+    "inputs": {
+      "unet_name": "miaomiaoHarem_anima12_int8convrot_00001_.safetensors",
+      "weight_dtype": "default",
+      "model_type": "anima",
+      "on_the_fly_quantization": false,
+      "enable_convrot": true,
+      "lora_mode": "Stochastic"
+    },
+    "class_type": "OTUNetLoaderW8A8",
+    "_meta": {
+      "title": "Load Diffusion Model INT8 (W8A8)"
+    }
+  },
+  "35": {
     "inputs": {
       "images": [
         "11",

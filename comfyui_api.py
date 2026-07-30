@@ -68,7 +68,7 @@ async def get_history(prompt_id, host):
         return resp.json()
 
 
-async def run_workflow(workflow, wait=True, poll_interval=1.0, timeout=300):
+async def run_workflow(workflow, wait=True, poll_interval=1.0, timeout=3000):
     async with _pick_lock:
         host = await pick_idle_host()
         result = await post_prompt(workflow, host=host)

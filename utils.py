@@ -34,7 +34,7 @@ async def check_nsfw(data) -> dict:
                 resp.raise_for_status()
                 result = resp.json()
                 nsfw_score = result.get("nsfw_score", 0)
-                return nsfw_score >= 0.5
+                return nsfw_score >= 0.9
         except:
             pass
 

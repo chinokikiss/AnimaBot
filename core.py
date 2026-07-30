@@ -59,14 +59,15 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     resp = await call_api(ws, action, {
         param1: id1,
         "message": [
-            {"type": "text", "data": {"text": "呜…少女正在构思提示词中，请稍等片刻哦 (｡>﹏<｡)"}}
+            {"type": "at", "data": {"qq": str(user_id)}},
+            {"type": "text", "data": {"text": " 呜…少女正在构思提示词中，请稍等片刻哦 (｡>﹏<｡)"}}
         ]
     })
     msg_id = resp.get("data", {}).get("message_id")
 
     prompt, width, height = await extract_prompt_params(user_text)
 
-    tags_prompt, natural_prompt, chinese_content = await agent(prompt)
+    tags_prompt, natural_prompt, description, characters = await agent(prompt)
 
     t1 = time.time()
 
@@ -76,7 +77,8 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
     resp = await call_api(ws, action, {
         param1: id1,
         "message": [
-            {"type": "text", "data": {"text": "提示词生成完成啦～少女正在努力绘制图片中 ✨ヽ(●´∀`●)ﾉ"}}
+            {"type": "at", "data": {"qq": str(user_id)}},
+            {"type": "text", "data": {"text": " 提示词生成完成啦～少女正在努力绘制图片中 ✨ヽ(●´∀`●)ﾉ"}}
         ]
     })
     msg_id = resp.get("data", {}).get("message_id")
@@ -141,7 +143,29 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
         it = t2 - t1
         tt = t2 - t0
         size_str = f"{width}x{height}"
+        characters = [f'"{char}"' for char in characters]
+        char_str = ", ".join(characters) if characters else "无"
         params_nodes = [
+            {
+                "type": "node",
+                "data": {
+                    "name": "Anima",
+                    "uin": str(self_id),
+                    "content": [
+                        {"type": "text", "data": {"text": f"场景描述: {description}"}}
+                    ]
+                }
+            },
+            {
+                "type": "node",
+                "data": {
+                    "name": "Anima",
+                    "uin": str(self_id),
+                    "content": [
+                        {"type": "text", "data": {"text": f"涉及角色: {char_str}"}}
+                    ]
+                }
+            },
             {
                 "type": "node",
                 "data": {
@@ -168,20 +192,10 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                     "name": "Anima",
                     "uin": str(self_id),
                     "content": [
-                        {"type": "text", "data": {"text": f"中文解释: {chinese_content}"}}
-                    ]
-                }
-            },
-            {
-                "type": "node",
-                "data": {
-                    "name": "Anima",
-                    "uin": str(self_id),
-                    "content": [
                         {
                             "type": "text", 
                             "data": {
-                                "text": f"Size: {size_str}\n提示词耗时: {pt:.2f}s | 绘制耗时: {it:.2f}s | 总耗时: {tt:.2f}s"
+                                "text": f"尺寸: {size_str}\n提示词耗时: {pt:.2f}s | 绘制耗时: {it:.2f}s | 总耗时: {tt:.2f}s"
                             }
                         }
                     ]
@@ -221,7 +235,8 @@ async def upscale(ws, id1, id2, is_group, user_msg_id, image):
     resp = await call_api(ws, action, {
         param1: id1,
         "message": [
-            {"type": "text", "data": {"text": "少女正在努力放大图片中，请稍等一下哦 (๑˃̵ᴗ˂̵)و"}}
+            {"type": "at", "data": {"qq": str(user_id)}},
+            {"type": "text", "data": {"text": " 少女正在努力放大图片中，请稍等一下哦 (๑˃̵ᴗ˂̵)و"}}
         ]
     })
     msg_id = resp.get("data", {}).get("message_id")
