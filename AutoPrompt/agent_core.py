@@ -209,7 +209,7 @@ async def expand_zh_tags(
             {"role": "system", "content": _EXPAND_TAGS_SYSTEM_PROMPT},
             {"role": "user", "content": expand_context},
         ],
-        reasoning_effort="medium",
+        reasoning_effort="high",
         extra_body={"thinking": {"type": "enabled"}},
         temperature=1.0,
         top_p=0.9,
@@ -299,7 +299,7 @@ async def agent(
     zh_tags, user_description = await expand_zh_tags(user_description, img_tags)
     zh_tags, en_tags = _split_tags_by_language(zh_tags)
     if en_tags:
-        user_description = f"{user_description.rstrip()}。{en_tags}"
+        user_description = f"{user_description.rstrip()}{en_tags}"
              
     search_results, selected_characters = await search(zh_tags, user_description)
 
