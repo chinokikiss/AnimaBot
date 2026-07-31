@@ -1,12 +1,16 @@
 import os
 import re
+import io
 import pandas as pd
 import numpy as np
+from typing import List, Dict
+from imgutils.tagging.pixai import get_pixai_tags
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "tags_enhanced.csv")
 
 _SCORE_RE = re.compile(r"^score_[1-9]$")
 _WEIGHT_RE = re.compile(r"^\((?P<body>.+):(?P<weight>\d+(?:\.\d+)?)\)$")
+_USER_WEIGHT_RE = re.compile(r"\(\s*([^():]+?)\s*:\s*(\d+(?:\.\d+)?)\s*\)")
 
 
 def _normalize_tag_body(body: str) -> str:
@@ -24,9 +28,6 @@ def _normalize_tag_body(body: str) -> str:
     body = " ".join(body.split())
     body = body.replace("(", "\\(").replace(")", "\\)")
     return f"@{body}" if is_artist and body else body
-
-
-_USER_WEIGHT_RE = re.compile(r"\(\s*([^():]+?)\s*:\s*(\d+(?:\.\d+)?)\s*\)")
 
 
 def _to_anima_weight(raw: str) -> str:
@@ -82,6 +83,7 @@ def normalize_anima_tags(tags_prompt: str) -> str:
             continue
         normalized.append(f"({body}:{weight})" if weight else body)
     return ", ".join(normalized)
+
 
 def _artist_candidate_metrics(entry: dict) -> tuple[int, float, float]:
     coverage = len(entry.get("sources") or [])
@@ -187,6 +189,7 @@ def sample_tags(weighted_k=3, random_k=2, max_threshold=None, encoding='utf-8'):
     result = df_filtered.loc[final_indices, ['cn_name']].copy()
     return result
 
+
 def escape_parentheses(data):
     if isinstance(data, str):
         return data.replace('(', '\\(').replace(')', '\\)')
@@ -198,3 +201,62 @@ def escape_parentheses(data):
         return tuple(escape_parentheses(item) for item in data)
     else:
         return data
+
+
+def process_tags(tags_dict: Dict[str, float], escape_parentheses: bool = False) -> Dict[str, float]:
+    processed = {}
+    for tag, score in tags_dict.items():
+        new_tag = tag
+        if escape_parentheses:
+            new_tag = new_tag.replace("(", r"\(").replace(")", r"\)")
+        new_tag = new_tag.replace("_", " ")
+        processed[new_tag] = round(score, 2)
+    return processed
+
+
+def _get_img_tags(img: bytes) -> Dict[str, Dict[str, float]]:
+    general_tags, character_tags = get_pixai_tags(
+        io.BytesIO(img),
+        model_name="v0.9",
+        thresholds={"general": 0.3, "character": 0.5},
+    )
+    return {
+        "general": process_tags(general_tags),
+        "character": process_tags(character_tags, escape_parentheses=True),
+    }
+
+
+def _split_tags_by_language(tags: str) -> tuple[str, List[str]]:
+    zh_tags = []
+    en_tags = []
+    for tag in re.split(r"[,，、]+", tags):
+        tag = tag.strip()
+        if not tag:
+            continue
+        if re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", tag):
+            zh_tags.append(tag)
+        else:
+            en_tags.append(tag)
+    return ", ".join(zh_tags), ", ".join(en_tags)
+
+
+def _split_layers(prompt_content: str) -> tuple[str, str]:
+    """按空行切分硬锚点层与空间叙事层。空间叙事层可能被模型折成多行，
+    因此不能用 rsplit('\\n', 1)——那样会把叙事层的前几句并进标签里。"""
+    content = (prompt_content or "").strip()
+    content = re.sub(r"^```[a-zA-Z]*\n|\n```$", "", content).strip()
+    if not content:
+        return "", "none"
+
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", content) if b.strip()]
+    if len(blocks) >= 2:
+        tags_block, nl_block = blocks[0], " ".join(blocks[1:])
+    else:
+        lines = [l.strip() for l in blocks[0].split("\n") if l.strip()]
+        if len(lines) >= 2:
+            tags_block, nl_block = lines[0], " ".join(lines[1:])
+        else:
+            return blocks[0], "none"
+
+    nl_block = " ".join(nl_block.split())
+    return tags_block, nl_block or "none"

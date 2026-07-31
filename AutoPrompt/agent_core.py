@@ -5,13 +5,15 @@ import json
 import logging
 import os
 import re
+
 from openai import AsyncOpenAI
 from typing import List, Dict, Any
 
 from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
                            _ARTIST_SELECTION_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
 from .tools import execute_search_tags, execute_get_related_tags, execute_get_artist_recommendations
-from .utils import sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate
+from .utils import (sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate, _get_img_tags,
+                    _split_tags_by_language, _split_layers)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -180,7 +182,11 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
     # logger.info("搜索结果:\n%s", json.dumps(modified_search_results, indent=2, ensure_ascii=False))
     return modified_search_results, selected_characters
 
-async def expand_zh_tags(user_description: str) -> tuple[str, str]:
+
+async def expand_zh_tags(
+    user_description: str,
+    img_tags: Dict[str, Dict[str, float]] | None = None,
+) -> tuple[str, str]:
     df_sampled = sample_tags(weighted_k=WEIGHTED_K, random_k=RANDOM_K, max_threshold=SAMPLE_MAX_THRESHOLD)
     candidates = df_sampled.to_dict(orient="records")
     candidates = [candidate["cn_name"].split(',')[0] for candidate in candidates]
@@ -190,6 +196,10 @@ async def expand_zh_tags(user_description: str) -> tuple[str, str]:
         f"【用户原始描述 / User Description】:\n{user_description}\n\n"
         f"【候选采样标签 / Sampled Candidates】:\n{candidates}"
     )
+    if img_tags is not None:
+        expand_context += (
+            f"\n\n【图像识别标签 / Image Tags】:\n{img_tags}"
+        )
 
     logger.info("正在尝试补充标签...")
 
@@ -227,27 +237,6 @@ async def expand_zh_tags(user_description: str) -> tuple[str, str]:
             new_natural_prompt = re.sub(r"\s+", " ", raw_natural)
 
     return new_tags_prompt, new_natural_prompt
-
-def _split_layers(prompt_content: str) -> tuple[str, str]:
-    """按空行切分硬锚点层与空间叙事层。空间叙事层可能被模型折成多行，
-    因此不能用 rsplit('\\n', 1)——那样会把叙事层的前几句并进标签里。"""
-    content = (prompt_content or "").strip()
-    content = re.sub(r"^```[a-zA-Z]*\n|\n```$", "", content).strip()
-    if not content:
-        return "", "none"
-
-    blocks = [b.strip() for b in re.split(r"\n\s*\n", content) if b.strip()]
-    if len(blocks) >= 2:
-        tags_block, nl_block = blocks[0], " ".join(blocks[1:])
-    else:
-        lines = [l.strip() for l in blocks[0].split("\n") if l.strip()]
-        if len(lines) >= 2:
-            tags_block, nl_block = lines[0], " ".join(lines[1:])
-        else:
-            return blocks[0], "none"
-
-    nl_block = " ".join(nl_block.split())
-    return tags_block, nl_block or "none"
 
 
 async def _select_artist_from_user_style(user_description: str) -> str | None:
@@ -296,12 +285,22 @@ async def _select_artist_from_user_style(user_description: str) -> str | None:
     return normalize_anima_tags(selected_artist)
 
 
-async def agent(user_description: str) -> tuple[str, str, str, List[str]]:
+async def agent(
+    user_description: str,
+    img: bytes | None = None,
+) -> tuple[str, str, str, List[str]]:
     logger.info("用户描述: %s", user_description)
 
+    img_tags = await asyncio.to_thread(_get_img_tags, img) if img is not None else None
+    if img_tags is not None:
+        logger.info("图像识别标签: %s", json.dumps(img_tags, ensure_ascii=False))
+
     original_description = user_description
-    zh_tags, user_description = await expand_zh_tags(user_description)
-            
+    zh_tags, user_description = await expand_zh_tags(user_description, img_tags)
+    zh_tags, en_tags = _split_tags_by_language(zh_tags)
+    if en_tags:
+        user_description = f"{user_description.rstrip()}。{en_tags}"
+             
     search_results, selected_characters = await search(zh_tags, user_description)
 
     user_context = (
@@ -367,6 +366,7 @@ async def agent(user_description: str) -> tuple[str, str, str, List[str]]:
             logger.info("tags_prompt 中已存在画师标签，跳过自动推荐。")
 
     return tags_prompt, natural_prompt, user_description, selected_characters
+
 
 async def extract_prompt_params(text: str):
     messages = [

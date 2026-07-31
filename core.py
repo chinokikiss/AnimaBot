@@ -67,7 +67,7 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
 
     prompt, width, height = await extract_prompt_params(user_text)
 
-    tags_prompt, natural_prompt, description, characters = await agent(prompt)
+    tags_prompt, natural_prompt, description, characters = await agent(prompt, img=image)
 
     t1 = time.time()
 

@@ -4,3 +4,5 @@ httpx
 websockets
 pandas
 numpy
+onnxruntime
+dghs-imgutils >= 0.19.0
