@@ -9,7 +9,7 @@ import re
 from openai import AsyncOpenAI
 from typing import List, Dict, Any
 
-from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
+from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _JAILBREAKER, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
                            _ARTIST_SELECTION_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
 from .tools import execute_search_tags, execute_get_related_tags, execute_get_artist_recommendations
 from .utils import (sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate, _get_img_tags,
@@ -99,7 +99,6 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
             query=q["query"],
             search_mode="concept_explore",
             category=q["category"],
-            # wiki 只在角色消歧时有用；general 检索带 wiki 会灌入大量噪声文本
             include_wiki=(q["category"] == "character"),
         )
         for q in search_queries
@@ -193,6 +192,7 @@ async def expand_zh_tags(
     logger.info("候选采样标签: %s", candidates)
 
     expand_context = (
+        f"{_JAILBREAKER}\n\n"
         f"【用户原始描述 / User Description】:\n{user_description}\n\n"
         f"【候选采样标签 / Sampled Candidates】:\n{candidates}"
     )
@@ -304,6 +304,7 @@ async def agent(
     search_results, selected_characters = await search(zh_tags, user_description)
 
     user_context = (
+        f"{_JAILBREAKER}\n\n"
         f"【检索与关联标签结果 / Search Results】:\n{search_results}\n\n"
         f"【用户原始输入 / User Description】:\n{user_description}\n\n"
         f"{_ANIMA_ASSEMBLY_DIRECTIVE}"
