@@ -267,8 +267,13 @@ async def _select_artist_from_user_style(user_description: str) -> str | None:
             ],
             reasoning_effort="low",
             extra_body={"thinking": {"type": "enabled"}},
-            temperature=0.0,
+            temperature=1.0,
+            top_p=0.9,
         )
+
+        print("-"*10)
+        print(resp.choices[0].message.reasoning_content)
+        print("-"*10)
     except Exception as e:
         logger.warning("画风画师选择失败，将使用加权采样: %s", e)
         return None
