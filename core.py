@@ -1,3 +1,6 @@
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
 import asyncio
 import json
 import base64
@@ -7,49 +10,90 @@ import time
 from pathlib import Path
 import httpx
 from comfyui_api import load_workflow, run_workflow
-from utils import check_nsfw, log, delete_images
+from utils import check_nsfw, log
 from websockets.asyncio.client import connect
 
 from AutoPrompt.agent_core import agent, extract_prompt_params
 
 WS_URL = "ws://localhost:3001"
 TOKEN = ""
+MAX_CONCURRENT_REQUESTS_PER_USER = 2
 
 echo_id = 0
 pending = {}
-active_users = set()
+active_user_requests = {}
 
-async def extract_image_from_msg(msg_array, ws):
-    for seg in msg_array:
-        if seg.get("type") == "image":
-            file_url = seg.get("data", {}).get("url", "")
-            if file_url:
+
+def try_acquire_user_request(user_id):
+    """Reserve one request slot for a user, returning whether it was available."""
+    key = str(user_id)
+    active_requests = active_user_requests.get(key, 0)
+    if active_requests >= MAX_CONCURRENT_REQUESTS_PER_USER:
+        return False
+
+    active_user_requests[key] = active_requests + 1
+    return True
+
+
+def release_user_request(user_id):
+    """Release a request slot and remove the user when no requests remain."""
+    key = str(user_id)
+    active_requests = active_user_requests.get(key, 0)
+    if active_requests <= 1:
+        active_user_requests.pop(key, None)
+    else:
+        active_user_requests[key] = active_requests - 1
+
+async def extract_images_from_msg(msg_array, ws):
+    """Download all referenced images while preserving message order."""
+    visited_replies = set()
+
+    async def collect_segments(segments, client):
+        images = []
+        for seg in segments or []:
+            seg_type = seg.get("type")
+            if seg_type == "image":
+                file_url = seg.get("data", {}).get("url", "")
+                if not file_url:
+                    continue
                 try:
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        resp = await client.get(file_url)
-                        resp.raise_for_status()
-                        return resp.content
+                    resp = await client.get(file_url)
+                    resp.raise_for_status()
+                    images.append(resp.content)
                 except Exception as e:
                     log(f"[Image] 下载图片失败: {e}")
-
-    for seg in msg_array:
-        if seg.get("type") == "reply":
-            reply_id = seg.get("data", {}).get("id")
-            if reply_id:
+            elif seg_type == "reply":
+                reply_id = seg.get("data", {}).get("id")
+                if not reply_id or reply_id in visited_replies:
+                    continue
+                visited_replies.add(reply_id)
                 try:
                     resp = await call_api(ws, "get_msg", {"message_id": int(reply_id)})
                     orig_msg = resp.get("data", {}).get("message", [])
-                    img_bytes = await extract_image_from_msg(orig_msg, ws)
-                    if img_bytes:
-                        return img_bytes
+                    images.extend(await collect_segments(orig_msg, client))
                 except Exception as e:
                     log(f"[Reply] 获取历史消息或提取图片失败: {e}")
-                    
-    return None
+        return images
 
-async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self_id=None):
-    delete_images("/tmp/napcat-plugin-uploads")
+    async with httpx.AsyncClient(timeout=30) as client:
+        return await collect_segments(msg_array, client)
 
+
+async def extract_image_from_msg(msg_array, ws):
+    """Backward-compatible singular entry point returning the image list."""
+    return await extract_images_from_msg(msg_array, ws)
+
+async def anima(
+    ws,
+    id1,
+    id2,
+    is_group,
+    user_text,
+    user_msg_id,
+    image=None,
+    self_id=None,
+    images=None,
+):
     action = "send_group_msg" if is_group else "send_private_msg"
     param1 = "group_id" if is_group else "user_id"
     user_id = id2 if is_group else id1
@@ -67,7 +111,18 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
 
     prompt, width, height = await extract_prompt_params(user_text)
 
-    tags_prompt, natural_prompt, description, characters = await agent(prompt, img=image)
+    reference_images = images if images is not None else image
+    if reference_images is None:
+        reference_images = []
+    elif isinstance(reference_images, (bytes, bytearray, memoryview)):
+        reference_images = [bytes(reference_images)]
+    else:
+        reference_images = list(reference_images)
+
+    tags_prompt, natural_prompt, description, characters = await agent(
+        prompt,
+        images=reference_images,
+    )
 
     t1 = time.time()
 
@@ -219,13 +274,8 @@ async def anima(ws, id1, id2, is_group, user_text, user_msg_id, image=None, self
                 "user_id": id1,
                 "messages": params_nodes
             })
-        
-    delete_images("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/cache")
-    delete_images("/root/.config/QQ")
 
 async def upscale(ws, id1, id2, is_group, user_msg_id, image):
-    delete_images("/tmp/napcat-plugin-uploads")
-    
     action = "send_group_msg" if is_group else "send_private_msg"
     param1 = "group_id" if is_group else "user_id"
     user_id = id2 if is_group else id1
@@ -268,9 +318,6 @@ async def upscale(ws, id1, id2, is_group, user_msg_id, image):
         ]
     })
 
-    delete_images("/root/Napcat/opt/QQ/resources/app/app_launcher/napcat/cache")
-    delete_images("/root/.config/QQ")
-
 async def call_api(ws, action: str, params: dict = None):
     global echo_id
     echo_id += 1
@@ -303,38 +350,36 @@ async def handle_event(ws, data: dict):
         
         if msg_type == "private":
             log(f"[私聊] {user_id}: {raw_msg}")
-            image_bytes = await extract_image_from_msg(msg_array, ws)
+            image_bytes = await extract_images_from_msg(msg_array, ws)
             if is_drawing_command:
-                if user_id in active_users:
+                if not try_acquire_user_request(user_id):
                     await call_api(ws, "send_private_msg", {
                         "user_id": user_id,
                         "message": [{"type": "text", "data": {"text": "当前有任务正在进行中，请耐心等待哦 (｡•́︿•̀｡)"}}]
                     })
                 else:
-                    active_users.add(user_id)
                     try:
-                        await anima(ws, user_id, None, False, raw_msg, message_id, image=image_bytes, self_id=self_id)
+                        await anima(ws, user_id, None, False, raw_msg, message_id, images=image_bytes, self_id=self_id)
                     finally:
-                        active_users.discard(user_id)
+                        release_user_request(user_id)
             if is_upscale_command and image_bytes:
-                if user_id in active_users:
+                if not try_acquire_user_request(user_id):
                     await call_api(ws, "send_private_msg", {
                         "user_id": user_id,
                         "message": [{"type": "text", "data": {"text": "当前有任务正在进行中，请耐心等待哦 (｡•́︿•̀｡)"}}]
                     })
                 else:
-                    active_users.add(user_id)
                     try:
-                        await upscale(ws, user_id, None, False, message_id, image_bytes)
+                        await upscale(ws, user_id, None, False, message_id, image_bytes[0])
                     finally:
-                        active_users.discard(user_id)
+                        release_user_request(user_id)
 
         elif msg_type == "group":
             group_id = data.get("group_id")
             log(f"[群聊] {group_id} | {user_id}: {raw_msg}")
-            image_bytes = await extract_image_from_msg(msg_array, ws)
+            image_bytes = await extract_images_from_msg(msg_array, ws)
             if is_drawing_command:
-                if user_id in active_users:
+                if not try_acquire_user_request(user_id):
                     await call_api(ws, "send_group_msg", {
                         "group_id": group_id,
                         "message": [
@@ -343,13 +388,12 @@ async def handle_event(ws, data: dict):
                         ]
                     })
                 else:
-                    active_users.add(user_id)
                     try:
-                        await anima(ws, group_id, user_id, True, raw_msg, message_id, image=image_bytes, self_id=self_id)
+                        await anima(ws, group_id, user_id, True, raw_msg, message_id, images=image_bytes, self_id=self_id)
                     finally:
-                        active_users.discard(user_id)
+                        release_user_request(user_id)
             if is_upscale_command and image_bytes:
-                if user_id in active_users:
+                if not try_acquire_user_request(user_id):
                     await call_api(ws, "send_group_msg", {
                         "group_id": group_id,
                         "message": [
@@ -358,11 +402,10 @@ async def handle_event(ws, data: dict):
                         ]
                     })
                 else:
-                    active_users.add(user_id)
                     try:
-                        await upscale(ws, group_id, user_id, True, message_id, image_bytes)
+                        await upscale(ws, group_id, user_id, True, message_id, image_bytes[0])
                     finally:
-                        active_users.discard(user_id)
+                        release_user_request(user_id)
 
     elif post_type == "notice":
         log(f"[通知] {json.dumps(data, ensure_ascii=False)}")

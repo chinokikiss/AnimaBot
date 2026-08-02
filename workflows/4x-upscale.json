@@ -10,7 +10,7 @@
   },
   "2": {
     "inputs": {
-      "model_name": "4x-AnimeSharp.safetensors"
+      "model_name": "4x-UltraSharpV2.safetensors"
     },
     "class_type": "UpscaleModelLoader",
     "_meta": {

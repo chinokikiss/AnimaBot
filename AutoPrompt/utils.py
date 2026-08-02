@@ -1,10 +1,12 @@
 import os
 import re
 import io
+import asyncio
 import pandas as pd
 import numpy as np
 from typing import List, Dict
 from imgutils.tagging.pixai import get_pixai_tags
+from .artist_recognition import artist_recognition
 
 CSV_PATH = os.path.join(os.path.dirname(__file__), "tags_enhanced.csv")
 
@@ -233,7 +235,9 @@ def _split_tags_by_language(tags: str) -> tuple[str, List[str]]:
         tag = tag.strip()
         if not tag:
             continue
-        if re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", tag):
+        if tag[:1] == '#':
+            zh_tags.append(tag[1:])
+        elif re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", tag):
             zh_tags.append(tag)
         else:
             en_tags.append(tag)
@@ -260,3 +264,109 @@ def _split_layers(prompt_content: str) -> tuple[str, str]:
 
     nl_block = " ".join(nl_block.split())
     return tags_block, nl_block or "none"
+
+
+def _normalize_artist_tags(raw_artist) -> dict[str, float]:
+    """Normalize recognition output to ``{"@artist": confidence}``."""
+    if isinstance(raw_artist, dict):
+        entries = raw_artist.items()
+    elif isinstance(raw_artist, (list, tuple)):
+        if (
+            len(raw_artist) == 2
+            and not isinstance(raw_artist[0], (list, tuple, dict))
+        ):
+            entries = [raw_artist]
+        else:
+            entries = raw_artist
+    else:
+        entries = []
+
+    normalized = {}
+    for entry in entries:
+        if isinstance(entry, dict):
+            name = entry.get("artist") or entry.get("name")
+            score = entry.get("score", 1.0)
+        elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+            name, score = entry[0], entry[1]
+        else:
+            name, score = entry, 1.0
+        name = str(name or "").strip()
+        if not name:
+            continue
+        name = f"@{name.lstrip('@')}"
+        try:
+            score = round(float(score), 2)
+        except (TypeError, ValueError):
+            score = 1.0
+        normalized[name] = score
+    return normalized
+
+
+def _run_img_tag_batch(images: list) -> list:
+    """Run the single-image tag recognizer for every image in one worker."""
+    results = []
+    for image in images:
+        try:
+            results.append(_get_img_tags(image))
+        except Exception as exc:
+            results.append(exc)
+    return results
+
+
+def _run_artist_batch(images: list) -> list:
+    """Run the single-image artist recognizer for every image in one worker."""
+    results = []
+    for image in images:
+        try:
+            results.append(artist_recognition(image, top_k=1))
+        except Exception as exc:
+            results.append(exc)
+    return results
+
+
+def _build_recognized_image(
+    image_index: int,
+    tag_result,
+    artist_result,
+) -> tuple[str, dict]:
+    if isinstance(tag_result, Exception):
+        print("图像%d标签识别失败: %s", image_index, tag_result)
+        tag_result = {}
+    if isinstance(artist_result, Exception):
+        print("图像%d画师识别失败: %s", image_index, artist_result)
+        artist_result = {}
+
+    if not isinstance(tag_result, dict):
+        tag_result = {}
+    return f"图像{image_index}", {
+        "general": tag_result.get("general", {}),
+        "character": tag_result.get("character", {}),
+        "artist": _normalize_artist_tags(artist_result),
+    }
+
+
+async def _recognize_images(images: list[bytes]) -> dict[str, dict]:
+    if not images:
+        return {}
+
+    tag_results, artist_results = await asyncio.gather(
+        asyncio.to_thread(_run_img_tag_batch, images),
+        asyncio.to_thread(_run_artist_batch, images),
+        return_exceptions=True,
+    )
+
+    if isinstance(tag_results, Exception):
+        print("图像标签批处理失败: %s", tag_results)
+        tag_results = [tag_results] * len(images)
+    if isinstance(artist_results, Exception):
+        print("图像画师批处理失败: %s", artist_results)
+        artist_results = [artist_results] * len(images)
+
+    recognized = []
+    for index in range(len(images)):
+        tag_result = tag_results[index] if index < len(tag_results) else {}
+        artist_result = artist_results[index] if index < len(artist_results) else {}
+        recognized.append(
+            _build_recognized_image(index + 1, tag_result, artist_result)
+        )
+    return dict(recognized)

@@ -9,11 +9,11 @@ import re
 from openai import AsyncOpenAI
 from typing import List, Dict, Any
 
-from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _JAILBREAKER, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
+from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _JAILBREAKER, _THINKING, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
                            _ARTIST_SELECTION_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
 from .tools import execute_search_tags, execute_get_related_tags, execute_get_artist_recommendations
-from .utils import (sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate, _get_img_tags,
-                    _split_tags_by_language, _split_layers)
+from .utils import (sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate,
+                    _split_tags_by_language, _split_layers, _recognize_images)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -184,7 +184,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
 
 async def expand_zh_tags(
     user_description: str,
-    img_tags: Dict[str, Dict[str, float]] | None = None,
+    img_tags: Dict[str, Dict[str, Any]] | None = None,
 ) -> tuple[str, str]:
     df_sampled = sample_tags(weighted_k=WEIGHTED_K, random_k=RANDOM_K, max_threshold=SAMPLE_MAX_THRESHOLD)
     candidates = df_sampled.to_dict(orient="records")
@@ -192,13 +192,15 @@ async def expand_zh_tags(
     logger.info("候选采样标签: %s", candidates)
 
     expand_context = (
-        f"{_JAILBREAKER}\n\n"
+        f"{_EXPAND_TAGS_SYSTEM_PROMPT}\n\n"
         f"【用户原始描述 / User Description】:\n{user_description}\n\n"
-        f"【候选采样标签 / Sampled Candidates】:\n{candidates}"
+        f"【候选采样标签 / Sampled Candidates】:\n{candidates}\n\n"
+        f"{_THINKING}"
     )
     if img_tags is not None:
         expand_context += (
-            f"\n\n【图像识别标签 / Image Tags】:\n{img_tags}"
+            f"\n\n【图像识别标签 / Image Tags】:\n"
+            f"{json.dumps(img_tags, ensure_ascii=False, indent=2)}"
         )
 
     logger.info("正在尝试补充标签...")
@@ -206,7 +208,7 @@ async def expand_zh_tags(
     resp = await client_quality.chat.completions.create(
         model=cfg["quality"]["model"],
         messages=[
-            {"role": "system", "content": _EXPAND_TAGS_SYSTEM_PROMPT},
+            {"role": "system", "content": _JAILBREAKER},
             {"role": "user", "content": expand_context},
         ],
         reasoning_effort="high",
@@ -292,12 +294,12 @@ async def _select_artist_from_user_style(user_description: str) -> str | None:
 
 async def agent(
     user_description: str,
-    img: bytes | None = None,
+    images: list[bytes] | None = None,
 ) -> tuple[str, str, str, List[str]]:
     logger.info("用户描述: %s", user_description)
 
-    img_tags = await asyncio.to_thread(_get_img_tags, img) if img is not None else None
-    if img_tags is not None:
+    img_tags = await _recognize_images(images) if images else None
+    if img_tags:
         logger.info("图像识别标签: %s", json.dumps(img_tags, ensure_ascii=False))
 
     original_description = user_description
@@ -309,10 +311,11 @@ async def agent(
     search_results, selected_characters = await search(zh_tags, user_description)
 
     user_context = (
-        f"{_JAILBREAKER}\n\n"
+        f"{_ANIMA_OUTPUT_FORMAT}\n\n"
         f"【检索与关联标签结果 / Search Results】:\n{search_results}\n\n"
         f"【用户原始输入 / User Description】:\n{user_description}\n\n"
-        f"{_ANIMA_ASSEMBLY_DIRECTIVE}"
+        f"{_ANIMA_ASSEMBLY_DIRECTIVE}\n\n"
+        f"{_THINKING}"
     )
 
     logger.info("正在生成最终提示词...")
@@ -320,7 +323,7 @@ async def agent(
     resp = await client_quality.chat.completions.create(
         model=cfg["quality"]["model"],
         messages=[
-            {"role": "system", "content": _ANIMA_OUTPUT_FORMAT},
+            {"role": "system", "content": _JAILBREAKER},
             {"role": "user", "content": user_context},
         ],
         reasoning_effort="high",
