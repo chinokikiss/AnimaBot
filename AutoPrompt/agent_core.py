@@ -6,41 +6,24 @@ import logging
 import os
 import re
 
-from openai import AsyncOpenAI
 from typing import List, Dict, Any
 
+from .clients import cfg, client_cheap, client_quality
 from .agent_prompts import (_ANIMA_OUTPUT_FORMAT, _ANIMA_ASSEMBLY_DIRECTIVE, _JAILBREAKER, _THINKING, _CLASSIFICATION_SYSTEM_PROMPT, _CHARACTER_SELECTION_SYSTEM_PROMPT,
-                           _ARTIST_SELECTION_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT)
+                           _ARTIST_SELECTION_SYSTEM_PROMPT, _EXPAND_TAGS_SYSTEM_PROMPT, _DRAWING_REQUEST_PARSER_PROMPT, _TAG_CATEGORY_CLASSIFICATION_PROMPT)
+from .reference import select_reference_image_tags
 from .tools import execute_search_tags, execute_get_related_tags, execute_get_artist_recommendations
 from .utils import (sample_tags, escape_parentheses, normalize_anima_tags, reapply_user_weights, sample_artist_candidate,
-                    _split_tags_by_language, _split_layers, _recognize_images)
+                    _split_tags_by_language, _split_layers, _recognize_images, _filter_img_tags_for_llm,
+                    _parse_tag_categories)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def _load_config() -> dict:
-    cfg_path = "config.json"
-    if not os.path.exists(cfg_path):
-        return {}
-    with open(cfg_path, encoding="utf-8") as f:
-        raw = f.read().strip()
-        return json.loads(raw) if raw else {}
-
-cfg = _load_config()
-client_cheap = AsyncOpenAI(
-    api_key=cfg["cheap"]["api_key"],
-    base_url=cfg["cheap"]["base_url"],
-)
-client_quality = AsyncOpenAI(
-    api_key=cfg["quality"]["api_key"],
-    base_url=cfg["quality"]["base_url"],
-)
-
-
 BATCH_SIZE = 5
-SEARCH_RESULT_LIMIT = 40
+SEARCH_RESULT_LIMIT = 30
 RELATED_TAGS_LIMIT = 50
 WEIGHTED_K = 100
 RANDOM_K = 50
@@ -48,6 +31,43 @@ SAMPLE_MAX_THRESHOLD = 1000000
 ARTIST_RECOMMEND_LIMIT = 30
 ARTIST_SAMPLE_LIMIT = 10
 ARTIST_CATALOG_PATH = os.path.join(os.path.dirname(__file__), "artist.txt")
+
+
+async def _classify_tags(tags: list[str]) -> dict[str, float]:
+    """在加权采样画师前，用 LLM 对最终标签逐项分类，得到 标签 -> 权重 映射。
+
+    分类失败或输出非法时返回空映射，调用方会按中性权重 1.0 降级，
+    不影响后续推荐链路。"""
+    cleaned_tags = [t.strip() for t in tags if t.strip()]
+    if not cleaned_tags:
+        return {}
+
+    try:
+        resp = await client_cheap.chat.completions.create(
+            model=cfg["cheap"]["model"],
+            messages=[
+                {"role": "system", "content": _TAG_CATEGORY_CLASSIFICATION_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"【待分类标签列表】\n{json.dumps(cleaned_tags, ensure_ascii=False)}",
+                },
+            ],
+            response_format={"type": "json_object"},
+            extra_body={"thinking": {"type": "disabled"}},
+            temperature=0.0,
+        )
+    except Exception as e:
+        logger.warning("标签分类失败，将按中性权重处理: %s", e)
+        return {}
+
+    try:
+        classify_tags = json.loads(resp.choices[0].message.content)
+    except json.JSONDecodeError:
+        classify_tags = {}
+    weights = _parse_tag_categories(classify_tags)
+    if not weights:
+        logger.warning("标签分类输出为空或非法，将按中性权重处理。")
+    return weights, classify_tags
 
 
 async def search(zh_tags: str, user_description: str) -> List[Any]:
@@ -144,26 +164,28 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
 
     resolved_character_results: List[str] = []
 
-    if selected_tags:
-        resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":[]} for selected_character, selected_tag in zip(selected_characters, selected_tags)]
-    
     # if selected_tags:
-    #     tasks = [
-    #         execute_get_related_tags(
-    #             tags=[selected_tag],
-    #             limit=RELATED_TAGS_LIMIT
-    #         )
-    #         for selected_tag in selected_tags
-    #     ]
-    #     results = []
-    #     for result in await asyncio.gather(*tasks):
-    #         result = json.loads(result)["results"]
-    #         new_result = []
-    #         for entry in result:
-    #             if '(' not in entry["tag"] and ')' not in entry["tag"]:
-    #                 new_result.append(entry)
-    #         results.append(new_result)
-    #     resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":result} for selected_character, selected_tag, result in zip(selected_characters, selected_tags, results)]
+    #     resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":[]} for selected_character, selected_tag in zip(selected_characters, selected_tags)]
+    
+    if selected_tags:
+        tasks = [
+            execute_get_related_tags(
+                tags=[selected_tag],
+                limit=RELATED_TAGS_LIMIT,
+                show_nsfw=False,
+                include_wiki=False
+            )
+            for selected_tag in selected_tags
+        ]
+        results = []
+        for result in await asyncio.gather(*tasks):
+            result = json.loads(result)["results"]
+            new_result = []
+            for entry in result:
+                if '(' not in entry["tag"] and ')' not in entry["tag"]:
+                    new_result.append(entry)
+            results.append(new_result)
+        resolved_character_results = [{"character":selected_character, "tag":selected_tag, "related_tags":result} for selected_character, selected_tag, result in zip(selected_characters, selected_tags, results)]
 
     modified_search_results: List[Any] = []
 
@@ -184,7 +206,7 @@ async def search(zh_tags: str, user_description: str) -> List[Any]:
 
 async def expand_zh_tags(
     user_description: str,
-    img_tags: Dict[str, Dict[str, Any]] | None = None,
+    protected_tags_by_image: Dict[str, List[str]] | None = None,
 ) -> tuple[str, str]:
     df_sampled = sample_tags(weighted_k=WEIGHTED_K, random_k=RANDOM_K, max_threshold=SAMPLE_MAX_THRESHOLD)
     candidates = df_sampled.to_dict(orient="records")
@@ -197,10 +219,10 @@ async def expand_zh_tags(
         f"【候选采样标签 / Sampled Candidates】:\n{candidates}\n\n"
         f"{_THINKING}"
     )
-    if img_tags is not None:
+    if protected_tags_by_image:
         expand_context += (
-            f"\n\n【图像识别标签 / Image Tags】:\n"
-            f"{json.dumps(img_tags, ensure_ascii=False, indent=2)}"
+            f"\n\n【受保护图像标签 / Protected Image Tags（必须逐字保留，不得删除/翻译/改写）】:\n"
+            f"{json.dumps(protected_tags_by_image, ensure_ascii=False, indent=2)}"
         )
 
     logger.info("正在尝试补充标签...")
@@ -299,11 +321,16 @@ async def agent(
     logger.info("用户描述: %s", user_description)
 
     img_tags = await _recognize_images(images) if images else None
-    if img_tags:
-        logger.info("图像识别标签: %s", json.dumps(img_tags, ensure_ascii=False))
 
     original_description = user_description
-    zh_tags, user_description = await expand_zh_tags(user_description, img_tags)
+
+    protected_tags_by_image = None
+    if img_tags:
+        img_tags_for_llm = _filter_img_tags_for_llm(img_tags)
+        protected_tags_by_image = await select_reference_image_tags(original_description, img_tags_for_llm)
+        logger.info("保留图像标签: %s", json.dumps(protected_tags_by_image, ensure_ascii=False))
+
+    zh_tags, user_description = await expand_zh_tags(user_description, protected_tags_by_image)
     zh_tags, en_tags = _split_tags_by_language(zh_tags)
     if en_tags:
         user_description = f"{user_description.rstrip()}{en_tags}"
@@ -348,14 +375,25 @@ async def agent(
 
         artist_tag = await _select_artist_from_user_style(original_description)
         if not artist_tag:
+            tags_list = [t.strip() for t in tags_prompt.split(',') if t.strip()]
+            tag_weights, classify_tags = await _classify_tags(tags_list)
+
+            HIGH_DISCRIMINATIVE_CATEGORIES = {
+                "character", "copyright", "style", "clothing", 
+                "background", "pose", "fetish", "nsfw", "appearance"
+            }
+
+            filtered_tags = [item["tag"].replace(" ", "_").replace("\\(", "(").replace("\\)", ")") for item in classify_tags["tags"] if item["category"] in HIGH_DISCRIMINATIVE_CATEGORIES]
+
             recommendations_json = await execute_get_artist_recommendations(
-                tags=tags_prompt.split(','),
+                tags=filtered_tags,
                 limit=ARTIST_RECOMMEND_LIMIT
             )
             recommendations_data = json.loads(recommendations_json).get("results", [])
             selected_artist_data = sample_artist_candidate(
                 recommendations_data,
                 top_n=ARTIST_SAMPLE_LIMIT,
+                tag_weights=tag_weights,
             )
 
             if selected_artist_data:

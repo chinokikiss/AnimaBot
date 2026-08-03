@@ -4,7 +4,7 @@ import io
 import asyncio
 import pandas as pd
 import numpy as np
-from typing import List, Dict
+from typing import List, Dict, Any
 from imgutils.tagging.pixai import get_pixai_tags
 from .artist_recognition import artist_recognition
 
@@ -13,6 +13,22 @@ CSV_PATH = os.path.join(os.path.dirname(__file__), "tags_enhanced.csv")
 _SCORE_RE = re.compile(r"^score_[1-9]$")
 _WEIGHT_RE = re.compile(r"^\((?P<body>.+):(?P<weight>\d+(?:\.\d+)?)\)$")
 _USER_WEIGHT_RE = re.compile(r"\(\s*([^():]+?)\s*:\s*(\d+(?:\.\d+)?)\s*\)")
+
+TAG_CATEGORY_WEIGHT = {
+    "character": 2.5,
+    "copyright": 2.0,
+    "style": 2.0,
+    "appearance": 1.2,
+    "clothing": 1.2,
+    "composition": 1.0,
+    "lighting": 1.0,
+    "background": 0.8,
+    "pose": 0.5,
+    "fetish": 0.3,
+    "nsfw": 0.05,
+    "quality": 0,
+}
+DEFAULT_TAG_CATEGORY_WEIGHT = 1.0
 
 
 def _normalize_tag_body(body: str) -> str:
@@ -87,8 +103,29 @@ def normalize_anima_tags(tags_prompt: str) -> str:
     return ", ".join(normalized)
 
 
-def _artist_candidate_metrics(entry: dict) -> tuple[int, float, float]:
-    coverage = len(entry.get("sources") or [])
+_DEFAULT_TAG_WEIGHT = 1.0
+
+
+def _artist_candidate_metrics(entry: dict, tag_weights: dict | None = None) -> tuple[float, float, float]:
+    """提取画师候选的覆盖率、共现量与画师总帖数。
+
+    覆盖率不再是单纯的 sources 数量：按标签类别权重（如角色 2.5、版权 2.0、
+    质量 0）加权求和，角色/版权类标签对画师关联度的贡献远高于质量标签。
+    sources 未在权重映射中的标签按中性权重 1.0 计；重复标签去重后只计一次。"""
+    sources = entry.get("sources") or []
+    if not isinstance(sources, list):
+        sources = []
+    weights = tag_weights or {}
+
+    coverage = 0.0
+    seen = set()
+    for source in sources:
+        key = str(source).strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        coverage += weights.get(key, _DEFAULT_TAG_WEIGHT)
+
     try:
         cooc = max(float(entry.get("cooc_count") or 0), 0.0)
         post_count = max(float(entry.get("post_count") or 0), 0.0)
@@ -97,8 +134,8 @@ def _artist_candidate_metrics(entry: dict) -> tuple[int, float, float]:
     return coverage, cooc, post_count
 
 
-def rank_artist_candidates(results: list[dict], top_n: int = 10) -> list[dict]:
-    """画师候选预排序：sources 覆盖率优先，其次按 共现浓度 × log(共现量)。
+def rank_artist_candidates(results: list[dict], top_n: int = 10, tag_weights: dict | None = None) -> list[dict]:
+    """画师候选预排序：加权 sources 覆盖率优先，其次按 共现浓度 × log(共现量)。
 
     覆盖多个输入标签的画师（如同时命中角色与场景）比单标签高共现的画师
     更契合整体需求。次级得分不能只用浓度（cooc/post）——那会让百帖级
@@ -106,14 +143,14 @@ def rank_artist_candidates(results: list[dict], top_n: int = 10) -> list[dict]:
     被生成模型学习得更充分，故乘 log(cooc) 平衡专精度与证据量。
     排序后只保留 top_n，避免低相关候选进入最终采样池。"""
     def _score(entry: dict) -> tuple:
-        coverage, cooc, post_count = _artist_candidate_metrics(entry)
+        coverage, cooc, post_count = _artist_candidate_metrics(entry, tag_weights)
         ratio = cooc / post_count if post_count > 0 else 0.0
         return (coverage, ratio * np.log10(cooc + 1))
 
     return sorted(results, key=_score, reverse=True)[:top_n]
 
 
-def sample_artist_candidate(results: list[dict], top_n: int = 10) -> dict | None:
+def sample_artist_candidate(results: list[dict], top_n: int = 10, tag_weights: dict | None = None) -> dict | None:
     """从高相关画师候选中按相关性加权随机抽取一个。
 
     候选先沿用 ``rank_artist_candidates`` 的排序逻辑限制在 top_n 内，
@@ -124,13 +161,13 @@ def sample_artist_candidate(results: list[dict], top_n: int = 10) -> dict | None
         result for result in results
         if isinstance(result, dict) and str(result.get("artist") or "").strip()
     ]
-    candidates = rank_artist_candidates(candidates, top_n=top_n)
+    candidates = rank_artist_candidates(candidates, top_n=top_n, tag_weights=tag_weights)
     if not candidates:
         return None
 
     weights = []
     for candidate in candidates:
-        coverage, cooc, post_count = _artist_candidate_metrics(candidate)
+        coverage, cooc, post_count = _artist_candidate_metrics(candidate, tag_weights)
         concentration = cooc / post_count if post_count > 0 else 0.0
         evidence = concentration * np.log10(cooc + 1.0)
         weights.append(max(float(coverage), 1.0) * max(evidence, 0.0))
@@ -194,7 +231,7 @@ def sample_tags(weighted_k=3, random_k=2, max_threshold=None, encoding='utf-8'):
 
 def escape_parentheses(data):
     if isinstance(data, str):
-        return data.replace('(', '\\(').replace(')', '\\)')
+        return data.replace('(', '\\(').replace(')', '\\)').replace('_', ' ')
     elif isinstance(data, list):
         return [escape_parentheses(item) for item in data]
     elif isinstance(data, dict):
@@ -222,10 +259,36 @@ def _get_img_tags(img: bytes) -> Dict[str, Dict[str, float]]:
         model_name="v0.9",
         thresholds={"general": 0.3, "character": 0.5},
     )
+    character_tags = dict(
+        sorted(character_tags.items(), key=lambda kv: kv[1], reverse=True)[:1]
+    )
     return {
         "general": process_tags(general_tags),
         "character": process_tags(character_tags, escape_parentheses=True),
     }
+
+
+def _filter_img_tags_for_llm(img_tags: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, List[str]]]:
+    """把识别结果中的置信度移除，转为纯标签列表，避免 LLM 按分数挑选。
+
+    分数只用于代码侧的预过滤与排序，不传给扩写/组装 LLM；
+    标签按置信度降序排列，画师标签保留 @ 前缀。"""
+    filtered: Dict[str, Dict[str, List[str]]] = {}
+    for image, groups in img_tags.items():
+        entry: Dict[str, List[str]] = {}
+        for group in ("general", "character", "artist"):
+            raw = groups.get(group) or {}
+            if isinstance(raw, dict):
+                tags = [t for t, _ in sorted(raw.items(), key=lambda kv: kv[1], reverse=True)]
+            elif isinstance(raw, (list, tuple)):
+                tags = [str(t).strip() for t in raw if str(t).strip()]
+            else:
+                tags = []
+            if tags:
+                entry[group] = tags
+        if entry:
+            filtered[image] = entry
+    return filtered
 
 
 def _split_tags_by_language(tags: str) -> tuple[str, List[str]]:
@@ -370,3 +433,34 @@ async def _recognize_images(images: list[bytes]) -> dict[str, dict]:
             _build_recognized_image(index + 1, tag_result, artist_result)
         )
     return dict(recognized)
+
+
+def _parse_tag_categories(classify_tags: dict) -> dict[str, float]:
+    """解析标签分类 LLM 的 JSON 输出，转换为 标签 -> 类别权重 的映射。
+
+    支持两种形态：{"tags": [{"tag": ..., "category": ...}, ...]} 或直接
+    {"tag": "category", ...}。未识别类别按中性权重 1.0 处理，避免
+    分类遗漏导致画师关联强度被错误压低。"""
+
+    entries: list = []
+    if isinstance(classify_tags.get("tags"), list):
+        entries = classify_tags["tags"]
+    elif isinstance(classify_tags.get("results"), list):
+        entries = classify_tags["results"]
+
+    weights: dict[str, float] = {}
+    if entries:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            tag = str(entry.get("tag") or "").strip()
+            category = str(entry.get("category") or "").strip().lower()
+            if tag:
+                weights[tag.lower()] = TAG_CATEGORY_WEIGHT.get(category, DEFAULT_TAG_CATEGORY_WEIGHT)
+    else:
+        for tag, category in classify_tags.items():
+            if not isinstance(tag, str):
+                continue
+            category = str(category or "").strip().lower()
+            weights[tag.strip().lower()] = TAG_CATEGORY_WEIGHT.get(category, DEFAULT_TAG_CATEGORY_WEIGHT)
+    return weights
